@@ -1,6 +1,6 @@
 // Конфигурация для Base Mini App
 // Обновите ROOT_URL после деплоя на Vercel
-const ROOT_URL = process.env.NEXT_PUBLIC_ROOT_URL || 'http://localhost:3000';
+const ROOT_URL = 'https://three-in-a-row-nine.vercel.app';
 
 export const minikitConfig = {
   // accountAssociation будет добавлен на шаге 5 после верификации
