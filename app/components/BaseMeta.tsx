@@ -32,6 +32,15 @@ export default function BaseMeta() {
     meta.setAttribute('name', 'fc:miniapp');
     meta.setAttribute('content', JSON.stringify(embedMetadata));
     document.head.appendChild(meta);
+
+    // Добавляем base:app_id meta тег для верификации
+    const appIdMeta = document.querySelector('meta[name="base:app_id"]');
+    if (!appIdMeta) {
+      const baseAppId = document.createElement('meta');
+      baseAppId.setAttribute('name', 'base:app_id');
+      baseAppId.setAttribute('content', '69669e6abc744612f97d61d4');
+      document.head.appendChild(baseAppId);
+    }
   }, []);
 
   return null;
