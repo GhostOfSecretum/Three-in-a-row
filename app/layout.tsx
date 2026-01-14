@@ -20,6 +20,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="ru">
+      <head>
+        <meta name="base:app_id" content="69669e6abc744612f97d61d4" />
+      </head>
       <body>
         <BaseMeta />
         {children}
