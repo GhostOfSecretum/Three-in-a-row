@@ -161,12 +161,13 @@ export default function Home() {
   }, [started]);
 
   const handleJoystickChange = useCallback((x: number, y: number, active: boolean) => {
-    if (!started) return;
+    // Debug log
+    console.log('Joystick:', { x: x.toFixed(2), y: y.toFixed(2), active });
     appRef.current?.setJoystick(x, y, active);
     if (active) {
       appRef.current?.enableAudio();
     }
-  }, [started]);
+  }, []);
 
   const handleAimChange = useCallback((screenX: number, screenY: number, active: boolean) => {
     if (!started) return;

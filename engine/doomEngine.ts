@@ -3,7 +3,6 @@ import { AudioManager } from '@/engine/audio';
 import { createInputState, ControlKey, InputState } from '@/engine/input';
 import { EngineSnapshot } from '@/engine/types';
 import { loadWasmMath, WasmMath } from '@/engine/wasmMath';
-import { AdvancedRenderer, AdvancedParticleSystem, DEFAULT_POST_PROCESS } from '@/engine/advancedRenderer';
 
 // ============================================================================
 // ТИПЫ ДЛЯ 2D TOP-DOWN SHOOTER (ALIEN SHOOTER STYLE)
@@ -188,14 +187,9 @@ export class DoomEngine {
   private audio = new AudioManager();
   private wasmMath: WasmMath | null = null;
   
-  // Продвинутый рендерер
-  private advRenderer: AdvancedRenderer;
-  private advParticles: AdvancedParticleSystem;
-  
   // Текстуры
   private floorPattern: CanvasPattern | null = null;
   private wallTextures: Map<number, CanvasPattern> = new Map();
-  private floorNormalMap: HTMLCanvasElement | null = null;
   private ambientParticles: { x: number; y: number; vx: number; vy: number; size: number; alpha: number }[] = [];
   
   // Игровое состояние
@@ -261,26 +255,6 @@ export class DoomEngine {
     }
     this.ctx = ctx;
     this.onState = onState;
-    
-    // Инициализация продвинутого рендерера
-    this.advRenderer = new AdvancedRenderer(canvas, {
-      bloom: true,
-      bloomIntensity: 0.5,
-      chromaticAberration: true,
-      chromaticIntensity: 1.5,
-      filmGrain: true,
-      grainIntensity: 0.06,
-      vignette: true,
-      vignetteIntensity: 0.6,
-      scanlines: false,
-      fog: true,
-      fogDensity: 0.12,
-      colorGrading: true,
-      contrast: 1.15,
-      saturation: 1.2,
-      ambientOcclusion: true,
-    });
-    this.advParticles = new AdvancedParticleSystem(1500);
     
     this.canvas.addEventListener('mousemove', this.handleMouseMove);
     this.canvas.addEventListener('mousedown', this.handleMouseDown);
@@ -613,6 +587,10 @@ export class DoomEngine {
     this.input.joystickX = x;
     this.input.joystickY = y;
     this.input.joystickActive = active;
+    // Debug
+    if (active && (Math.abs(x) > 0.1 || Math.abs(y) > 0.1)) {
+      console.log('Engine received joystick:', { x, y, active });
+    }
   }
 
   setAim(screenX: number, screenY: number, active: boolean) {
@@ -647,7 +625,6 @@ export class DoomEngine {
     this.canvas.width = Math.max(1, Math.floor(rect.width * dpr));
     this.canvas.height = Math.max(1, Math.floor(rect.height * dpr));
     this.ctx.scale(dpr, dpr);
-    this.advRenderer.resize();
   }
 
   private initAmbientParticles() {
@@ -877,9 +854,9 @@ export class DoomEngine {
   private shoot() {
     this.player.ammo--;
     this.audio.playShot();
-    this.screenShake = Math.min(this.screenShake + 0.5, 3);
+    this.screenShake = Math.min(this.screenShake + 0.6, 4);
     
-    const spread = (Math.random() - 0.5) * 0.05;
+    const spread = (Math.random() - 0.5) * 0.04;
     const angle = this.player.angle + spread;
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
@@ -895,51 +872,118 @@ export class DoomEngine {
       caliber: 3,
     });
     
-    // Дульная вспышка
+    // Улучшенная дульная вспышка - многослойная
     this.lights.push({
-      x: this.player.x + cos * 30,
-      y: this.player.y + sin * 30,
-      radius: 80,
-      intensity: 1,
-      color: '#ffaa00',
-      life: 0.05,
-      maxLife: 0.05,
+      x: this.player.x + cos * 35,
+      y: this.player.y + sin * 35,
+      radius: 100,
+      intensity: 1.2,
+      color: '#ffcc44',
+      life: 0.06,
+      maxLife: 0.06,
     });
     
-    // Частицы огня
-    for (let i = 0; i < 8; i++) {
-      const a = angle + (Math.random() - 0.5) * 0.5;
+    // Вторичная вспышка
+    this.lights.push({
+      x: this.player.x + cos * 25,
+      y: this.player.y + sin * 25,
+      radius: 60,
+      intensity: 0.8,
+      color: '#ff8800',
+      life: 0.04,
+      maxLife: 0.04,
+    });
+    
+    // Улучшенные частицы огня - больше и разнообразнее
+    const muzzleX = this.player.x + cos * 30;
+    const muzzleY = this.player.y + sin * 30;
+    
+    // Яркие искры
+    for (let i = 0; i < 12; i++) {
+      const sparkAngle = angle + (Math.random() - 0.5) * 0.6;
+      const speed = 250 + Math.random() * 200;
       this.particles.push({
-        x: this.player.x + cos * 28,
-        y: this.player.y + sin * 28,
-        vx: Math.cos(a) * (200 + Math.random() * 150),
-        vy: Math.sin(a) * (200 + Math.random() * 150),
-        life: 0.08 + Math.random() * 0.05,
-        maxLife: 0.15,
-        color: Math.random() > 0.5 ? '#ffcc00' : '#ff6600',
-        size: 3 + Math.random() * 3,
+        x: muzzleX,
+        y: muzzleY,
+        vx: Math.cos(sparkAngle) * speed,
+        vy: Math.sin(sparkAngle) * speed,
+        life: 0.1 + Math.random() * 0.08,
+        maxLife: 0.18,
+        color: Math.random() > 0.6 ? '#ffffff' : Math.random() > 0.5 ? '#ffdd44' : '#ff8800',
+        size: 2 + Math.random() * 3,
         type: 'spark',
         rotation: 0,
         rotationSpeed: 0,
         gravity: 0,
+        glow: true,
       });
     }
     
-    // Гильза
-    const shellAngle = this.player.angle + Math.PI / 2;
+    // Тлеющие угольки (медленнее, дольше живут)
+    for (let i = 0; i < 4; i++) {
+      const emberAngle = angle + (Math.random() - 0.5) * 1.2;
+      this.particles.push({
+        x: muzzleX,
+        y: muzzleY,
+        vx: Math.cos(emberAngle) * (50 + Math.random() * 80),
+        vy: Math.sin(emberAngle) * (50 + Math.random() * 80),
+        life: 0.3 + Math.random() * 0.4,
+        maxLife: 0.7,
+        color: '#ff6600',
+        size: 2 + Math.random() * 2,
+        type: 'ember',
+        rotation: 0,
+        rotationSpeed: 0,
+        gravity: 100,
+      });
+    }
+    
+    // Дым от выстрела
+    for (let i = 0; i < 3; i++) {
+      const smokeAngle = angle + (Math.random() - 0.5) * 0.8;
+      this.particles.push({
+        x: muzzleX + (Math.random() - 0.5) * 10,
+        y: muzzleY + (Math.random() - 0.5) * 10,
+        vx: Math.cos(smokeAngle) * (30 + Math.random() * 40),
+        vy: Math.sin(smokeAngle) * (30 + Math.random() * 40) - 20,
+        life: 0.4 + Math.random() * 0.3,
+        maxLife: 0.7,
+        color: '#888888',
+        size: 8 + Math.random() * 6,
+        type: 'smoke',
+        rotation: Math.random() * Math.PI * 2,
+        rotationSpeed: (Math.random() - 0.5) * 2,
+        gravity: -30,
+      });
+    }
+    
+    // Улучшенная гильза с реалистичной физикой
+    const shellAngle = this.player.angle + Math.PI / 2 + (Math.random() - 0.5) * 0.3;
+    const shellSpeed = 90 + Math.random() * 50;
     this.particles.push({
-      x: this.player.x + Math.cos(shellAngle) * 8,
-      y: this.player.y + Math.sin(shellAngle) * 8,
-      vx: Math.cos(shellAngle) * (80 + Math.random() * 40),
-      vy: Math.sin(shellAngle) * (80 + Math.random() * 40) - 50,
-      life: 2,
-      maxLife: 2,
+      x: this.player.x + Math.cos(shellAngle) * 10,
+      y: this.player.y + Math.sin(shellAngle) * 10,
+      vx: Math.cos(shellAngle) * shellSpeed,
+      vy: Math.sin(shellAngle) * shellSpeed - 80 - Math.random() * 40,
+      life: 2.5,
+      maxLife: 2.5,
       color: '#d4a574',
-      size: 4,
+      size: 5,
       type: 'shell',
       rotation: Math.random() * Math.PI * 2,
-      rotationSpeed: 15 + Math.random() * 10,
-      gravity: 400,
+      rotationSpeed: 18 + Math.random() * 12,
+      gravity: 500,
+    });
+    
+    // Маленькая вспышка у гильзы
+    this.lights.push({
+      x: this.player.x + Math.cos(shellAngle) * 10,
+      y: this.player.y + Math.sin(shellAngle) * 10,
+      radius: 20,
+      intensity: 0.4,
+      color: '#ffcc88',
+      life: 0.03,
+      maxLife: 0.03,
     });
   }
 
@@ -990,22 +1034,61 @@ export class DoomEngine {
   }
 
   private spawnWallHitEffect(x: number, y: number) {
-    // Искры
-    for (let i = 0; i < 12; i++) {
+    // Яркие искры от металла/камня
+    for (let i = 0; i < 18; i++) {
       const angle = Math.random() * Math.PI * 2;
-      const speed = 100 + Math.random() * 150;
+      const speed = 120 + Math.random() * 200;
+      const isWhite = Math.random() > 0.6;
       this.particles.push({
         x, y,
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed,
-        life: 0.2 + Math.random() * 0.2,
+        life: 0.15 + Math.random() * 0.25,
         maxLife: 0.4,
-        color: Math.random() > 0.5 ? '#ffcc00' : '#ffffff',
-        size: 2 + Math.random() * 2,
+        color: isWhite ? '#ffffff' : Math.random() > 0.5 ? '#ffdd44' : '#ffaa00',
+        size: isWhite ? 1 + Math.random() * 2 : 2 + Math.random() * 3,
         type: 'spark',
         rotation: 0,
         rotationSpeed: 0,
-        gravity: 200,
+        gravity: 250,
+        glow: true,
+      });
+    }
+    
+    // Осколки/пыль от стены
+    for (let i = 0; i < 8; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 40 + Math.random() * 80;
+      this.particles.push({
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 0.3 + Math.random() * 0.4,
+        maxLife: 0.7,
+        color: '#888888',
+        size: 3 + Math.random() * 4,
+        type: 'dust',
+        rotation: Math.random() * Math.PI * 2,
+        rotationSpeed: (Math.random() - 0.5) * 8,
+        gravity: 150,
+      });
+    }
+    
+    // Небольшое облако пыли
+    for (let i = 0; i < 2; i++) {
+      this.particles.push({
+        x: x + (Math.random() - 0.5) * 10,
+        y: y + (Math.random() - 0.5) * 10,
+        vx: (Math.random() - 0.5) * 30,
+        vy: -20 - Math.random() * 30,
+        life: 0.5 + Math.random() * 0.3,
+        maxLife: 0.8,
+        color: '#666666',
+        size: 12 + Math.random() * 8,
+        type: 'smoke',
+        rotation: Math.random() * Math.PI * 2,
+        rotationSpeed: (Math.random() - 0.5) * 2,
+        gravity: -20,
       });
     }
     
@@ -1014,54 +1097,101 @@ export class DoomEngine {
       this.decals.push({
         x, y,
         type: 'crack',
-        size: 8 + Math.random() * 8,
+        size: 10 + Math.random() * 10,
         rotation: Math.random() * Math.PI * 2,
-        alpha: 0.6,
-        color: '#222',
+        alpha: 0.7,
+        color: '#1a1a1a',
       });
     }
     
-    // Вспышка
+    // Основная вспышка
     this.lights.push({
       x, y,
-      radius: 40,
-      intensity: 0.8,
-      color: '#ffaa00',
-      life: 0.05,
-      maxLife: 0.05,
+      radius: 60,
+      intensity: 1,
+      color: '#ffcc44',
+      life: 0.06,
+      maxLife: 0.06,
+    });
+    
+    // Вторичная вспышка (отражение)
+    this.lights.push({
+      x, y,
+      radius: 35,
+      intensity: 0.6,
+      color: '#ff8844',
+      life: 0.04,
+      maxLife: 0.04,
     });
   }
 
   private spawnBloodEffect(x: number, y: number, vx: number, vy: number) {
-    // Капли крови
-    for (let i = 0; i < 15; i++) {
+    // Основные капли крови
+    for (let i = 0; i < 20; i++) {
       const angle = Math.random() * Math.PI * 2;
-      const speed = 50 + Math.random() * 120;
+      const speed = 60 + Math.random() * 150;
+      const size = 3 + Math.random() * 5;
       this.particles.push({
         x, y,
-        vx: Math.cos(angle) * speed + vx * 0.3,
-        vy: Math.sin(angle) * speed + vy * 0.3,
-        life: 0.4 + Math.random() * 0.4,
-        maxLife: 0.8,
-        color: Math.random() > 0.3 ? '#8b0000' : '#cc0000',
-        size: 3 + Math.random() * 4,
+        vx: Math.cos(angle) * speed + vx * 0.4,
+        vy: Math.sin(angle) * speed + vy * 0.4,
+        life: 0.5 + Math.random() * 0.5,
+        maxLife: 1,
+        color: Math.random() > 0.4 ? '#8b0000' : Math.random() > 0.5 ? '#aa0000' : '#660000',
+        size,
         type: 'blood',
         rotation: 0,
         rotationSpeed: 0,
-        gravity: 300,
+        gravity: 350,
       });
     }
     
-    // Пятно крови на полу
+    // Мелкие капли брызг
+    for (let i = 0; i < 12; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 100 + Math.random() * 180;
+      this.particles.push({
+        x, y,
+        vx: Math.cos(angle) * speed + vx * 0.5,
+        vy: Math.sin(angle) * speed + vy * 0.5,
+        life: 0.3 + Math.random() * 0.3,
+        maxLife: 0.6,
+        color: '#cc0000',
+        size: 1 + Math.random() * 2,
+        type: 'blood',
+        rotation: 0,
+        rotationSpeed: 0,
+        gravity: 400,
+      });
+    }
+    
+    // Пятно крови на полу - основное
     if (this.decals.length < MAX_DECALS) {
       this.decals.push({
         x, y,
         type: 'blood',
-        size: 15 + Math.random() * 20,
+        size: 18 + Math.random() * 25,
         rotation: Math.random() * Math.PI * 2,
-        alpha: 0.7,
-        color: '#6b0000',
+        alpha: 0.75,
+        color: '#5a0000',
       });
+    }
+    
+    // Дополнительные мелкие пятна вокруг
+    for (let i = 0; i < 3; i++) {
+      if (this.decals.length < MAX_DECALS) {
+        const offsetAngle = Math.random() * Math.PI * 2;
+        const offsetDist = 10 + Math.random() * 20;
+        this.decals.push({
+          x: x + Math.cos(offsetAngle) * offsetDist,
+          y: y + Math.sin(offsetAngle) * offsetDist,
+          type: 'blood',
+          size: 5 + Math.random() * 10,
+          rotation: Math.random() * Math.PI * 2,
+          alpha: 0.5 + Math.random() * 0.2,
+          color: '#4a0000',
+        });
+      }
     }
   }
 
@@ -1069,64 +1199,149 @@ export class DoomEngine {
     enemy.alive = false;
     this.kills++;
     this.score += this.getEnemyScore(enemy.type);
-    this.screenShake = Math.min(this.screenShake + 2, 6);
+    this.screenShake = Math.min(this.screenShake + 3, 8);
     
-    // Взрыв крови
-    for (let i = 0; i < 25; i++) {
+    // Вспышка смерти
+    this.lights.push({
+      x: enemy.x, y: enemy.y,
+      radius: 80,
+      intensity: 0.8,
+      color: enemy.type === 'spitter' ? '#44ff88' : '#ff4444',
+      life: 0.1,
+      maxLife: 0.1,
+    });
+    
+    // Массивный взрыв крови
+    for (let i = 0; i < 35; i++) {
       const angle = Math.random() * Math.PI * 2;
-      const speed = 80 + Math.random() * 180;
+      const speed = 100 + Math.random() * 220;
+      const size = 4 + Math.random() * 8;
       this.particles.push({
         x: enemy.x, y: enemy.y,
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed,
-        life: 0.5 + Math.random() * 0.5,
-        maxLife: 1,
-        color: Math.random() > 0.4 ? '#8b0000' : '#550000',
-        size: 4 + Math.random() * 6,
+        life: 0.6 + Math.random() * 0.6,
+        maxLife: 1.2,
+        color: Math.random() > 0.5 ? '#8b0000' : Math.random() > 0.5 ? '#aa0000' : '#550000',
+        size,
         type: 'blood',
         rotation: 0,
         rotationSpeed: 0,
-        gravity: 250,
+        gravity: 280,
       });
     }
     
-    // Куски (gibs)
-    for (let i = 0; i < 6; i++) {
+    // Мелкие брызги
+    for (let i = 0; i < 20; i++) {
       const angle = Math.random() * Math.PI * 2;
-      const speed = 100 + Math.random() * 150;
+      const speed = 150 + Math.random() * 200;
       this.particles.push({
         x: enemy.x, y: enemy.y,
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed,
-        life: 1.5 + Math.random() * 1,
-        maxLife: 2.5,
-        color: enemy.color,
-        size: 6 + Math.random() * 8,
-        type: 'gib',
-        rotation: Math.random() * Math.PI * 2,
-        rotationSpeed: 8 + Math.random() * 8,
+        life: 0.3 + Math.random() * 0.4,
+        maxLife: 0.7,
+        color: '#cc0000',
+        size: 2 + Math.random() * 3,
+        type: 'blood',
+        rotation: 0,
+        rotationSpeed: 0,
         gravity: 350,
       });
+    }
+    
+    // Улучшенные куски (gibs) с разными размерами
+    const gibCount = enemy.type === 'tank' ? 12 : 8;
+    for (let i = 0; i < gibCount; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 120 + Math.random() * 180;
+      const size = 5 + Math.random() * (enemy.type === 'tank' ? 12 : 8);
+      this.particles.push({
+        x: enemy.x + (Math.random() - 0.5) * enemy.size,
+        y: enemy.y + (Math.random() - 0.5) * enemy.size,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 50 - Math.random() * 50,
+        life: 2 + Math.random() * 1.5,
+        maxLife: 3.5,
+        color: enemy.color,
+        size,
+        type: 'gib',
+        rotation: Math.random() * Math.PI * 2,
+        rotationSpeed: 10 + Math.random() * 10,
+        gravity: 400,
+      });
+    }
+    
+    // Облако "взрыва" для больших врагов
+    if (enemy.type === 'tank' || enemy.type === 'spitter') {
+      for (let i = 0; i < 5; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const dist = Math.random() * 20;
+        this.particles.push({
+          x: enemy.x + Math.cos(angle) * dist,
+          y: enemy.y + Math.sin(angle) * dist,
+          vx: (Math.random() - 0.5) * 40,
+          vy: -30 - Math.random() * 50,
+          life: 0.6 + Math.random() * 0.4,
+          maxLife: 1,
+          color: enemy.type === 'spitter' ? '#224422' : '#333333',
+          size: 20 + Math.random() * 15,
+          type: 'smoke',
+          rotation: Math.random() * Math.PI * 2,
+          rotationSpeed: (Math.random() - 0.5) * 2,
+          gravity: -40,
+        });
+      }
     }
     
     // Большое пятно крови
     this.decals.push({
       x: enemy.x, y: enemy.y,
       type: 'blood',
-      size: 35 + Math.random() * 25,
+      size: 40 + Math.random() * 30 + (enemy.type === 'tank' ? 20 : 0),
       rotation: Math.random() * Math.PI * 2,
-      alpha: 0.8,
-      color: '#4a0000',
+      alpha: 0.85,
+      color: '#3a0000',
     });
     
-    // Шанс дропа
-    if (Math.random() < 0.25) {
+    // Дополнительные пятна вокруг
+    for (let i = 0; i < 5; i++) {
+      const splashAngle = Math.random() * Math.PI * 2;
+      const splashDist = 20 + Math.random() * 40;
+      if (this.decals.length < MAX_DECALS) {
+        this.decals.push({
+          x: enemy.x + Math.cos(splashAngle) * splashDist,
+          y: enemy.y + Math.sin(splashAngle) * splashDist,
+          type: 'blood',
+          size: 10 + Math.random() * 15,
+          rotation: Math.random() * Math.PI * 2,
+          alpha: 0.6 + Math.random() * 0.2,
+          color: '#4a0000',
+        });
+      }
+    }
+    
+    // Эффект ожога для кислотных врагов
+    if (enemy.type === 'spitter' && this.decals.length < MAX_DECALS) {
+      this.decals.push({
+        x: enemy.x, y: enemy.y,
+        type: 'scorch',
+        size: 25 + Math.random() * 15,
+        rotation: Math.random() * Math.PI * 2,
+        alpha: 0.5,
+        color: '#224422',
+      });
+    }
+    
+    // Шанс дропа с увеличенной вероятностью для сложных врагов
+    const dropChance = enemy.type === 'tank' ? 0.5 : enemy.type === 'shooter' ? 0.35 : 0.25;
+    if (Math.random() < dropChance) {
       const rand = Math.random();
       this.pickups.push({
         x: enemy.x,
         y: enemy.y,
-        type: rand < 0.5 ? 'health' : 'ammo',
-        amount: 25,
+        type: rand < 0.4 ? 'health' : rand < 0.85 ? 'ammo' : 'armor',
+        amount: enemy.type === 'tank' ? 35 : 25,
         collected: false,
         bobOffset: Math.random() * Math.PI * 2,
       });
@@ -1375,15 +1590,14 @@ export class DoomEngine {
   private render() {
     if (!this.level) return;
     
+    const ctx = this.ctx;
     const rect = this.canvas.getBoundingClientRect();
     const w = rect.width;
     const h = rect.height;
-    const dt = 1 / 60; // Approximate dt for effects
     
-    // Начало кадра - очистка буферов
-    this.advRenderer.beginFrame(dt);
-    
-    const ctx = this.advRenderer.getSceneContext();
+    // Очистка - тёмный фон
+    ctx.fillStyle = '#0a0a12';
+    ctx.fillRect(0, 0, w, h);
     
     ctx.save();
     
@@ -1410,96 +1624,119 @@ export class DoomEngine {
     this.renderBulletsAdvanced(ctx);
     this.renderPlayerAdvanced(ctx);
     this.renderParticlesAdvanced(ctx);
-    
-    // Рендеринг освещения
-    this.renderDynamicLighting();
+    this.renderLightsAdvanced(ctx);
     
     ctx.restore();
     
-    // Финализация кадра с post-processing
-    this.advRenderer.endFrame();
+    // Post-processing эффекты
+    this.renderPostProcessing(ctx, w, h);
     
     // Hit flash overlay
     if (this.hitFlash > 0) {
-      this.ctx.fillStyle = `rgba(255, 0, 0, ${this.hitFlash * 0.35})`;
-      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      ctx.fillStyle = `rgba(255, 0, 0, ${this.hitFlash * 0.35})`;
+      ctx.fillRect(0, 0, w, h);
     }
     
     // UI поверх всего
-    this.renderMinimapAdvanced(this.ctx, w, h);
-    this.renderHUDAdvanced(this.ctx, w, h);
+    this.renderMinimapAdvanced(ctx, w, h);
+    this.renderHUDAdvanced(ctx, w, h);
   }
 
-  private renderDynamicLighting() {
-    if (!this.level) return;
+  private renderLightsAdvanced(ctx: CanvasRenderingContext2D) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
     
-    // Ambient light
-    this.advRenderer.addLight(
-      this.player.x, 
-      this.player.y, 
-      250, 
-      'rgba(255, 250, 240, 0.15)', 
-      0.8
-    );
-    
-    // Player flashlight cone
-    const flashlightDist = 300;
-    const flashlightX = this.player.x + Math.cos(this.player.angle) * flashlightDist * 0.5;
-    const flashlightY = this.player.y + Math.sin(this.player.angle) * flashlightDist * 0.5;
-    this.advRenderer.addLight(flashlightX, flashlightY, 200, 'rgba(255, 250, 230, 0.3)', 0.6);
-    
-    // God rays from flashlight
-    this.advRenderer.addGodRays(
-      this.player.x + Math.cos(this.player.angle) * 20,
-      this.player.y + Math.sin(this.player.angle) * 20,
-      this.player.angle,
-      250,
-      150,
-      'rgba(255, 250, 230, 0.1)',
-      0.15
-    );
-    
-    // Dynamic lights from effects
+    // Динамические источники света от эффектов
     for (const light of this.lights) {
-      this.advRenderer.addLight(light.x, light.y, light.radius, light.color, light.intensity);
+      const gradient = ctx.createRadialGradient(light.x, light.y, 0, light.x, light.y, light.radius);
+      gradient.addColorStop(0, light.color);
+      gradient.addColorStop(0.5, light.color.replace(/[\d.]+\)$/, `${light.intensity * 0.5})`));
+      gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      
+      ctx.globalAlpha = light.intensity;
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(light.x, light.y, light.radius, 0, Math.PI * 2);
+      ctx.fill();
     }
     
-    // Enemy glow lights
+    // Фонарик игрока
+    const flashAngle = this.player.angle;
+    const flashX = this.player.x + Math.cos(flashAngle) * 80;
+    const flashY = this.player.y + Math.sin(flashAngle) * 80;
+    
+    const flashGradient = ctx.createRadialGradient(flashX, flashY, 0, flashX, flashY, 180);
+    flashGradient.addColorStop(0, 'rgba(255, 250, 230, 0.25)');
+    flashGradient.addColorStop(0.5, 'rgba(255, 245, 220, 0.1)');
+    flashGradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    
+    ctx.globalAlpha = 0.8;
+    ctx.fillStyle = flashGradient;
+    ctx.beginPath();
+    ctx.arc(flashX, flashY, 180, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Свечение врагов
     for (const enemy of this.enemies) {
       if (!enemy.alive) continue;
       
-      let glowColor = 'rgba(255, 50, 50, 0.15)';
-      let glowRadius = 40;
+      let color = 'rgba(255, 50, 50, 0.12)';
+      let radius = 35;
       
       if (enemy.type === 'spitter') {
-        glowColor = 'rgba(50, 255, 100, 0.2)';
-        glowRadius = 50;
+        color = 'rgba(50, 255, 100, 0.15)';
+        radius = 45;
       } else if (enemy.type === 'tank') {
-        glowColor = 'rgba(100, 100, 200, 0.15)';
-        glowRadius = 60;
-      } else if (enemy.type === 'shooter') {
-        glowColor = 'rgba(255, 100, 50, 0.15)';
+        color = 'rgba(100, 100, 200, 0.12)';
+        radius = 55;
       }
       
-      this.advRenderer.addPulsingLight(enemy.x, enemy.y, glowRadius, glowColor, 0.5, 4);
-    }
-    
-    // Pickup glow lights
-    for (const pickup of this.pickups) {
-      let color = 'rgba(0, 255, 100, 0.3)';
-      if (pickup.type === 'ammo') color = 'rgba(255, 200, 50, 0.3)';
-      else if (pickup.type === 'armor') color = 'rgba(50, 200, 255, 0.3)';
+      const pulse = Math.sin(this.gameTime * 4 + enemy.x) * 0.3 + 0.7;
+      const enemyGlow = ctx.createRadialGradient(enemy.x, enemy.y, 0, enemy.x, enemy.y, radius);
+      enemyGlow.addColorStop(0, color);
+      enemyGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
       
-      this.advRenderer.addPulsingLight(pickup.x, pickup.y, 50, color, 0.4, 3);
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = enemyGlow;
+      ctx.beginPath();
+      ctx.arc(enemy.x, enemy.y, radius, 0, Math.PI * 2);
+      ctx.fill();
     }
     
-    // Exit lights
-    for (const exitKey of this.level.exitTiles) {
-      const [ex, ey] = exitKey.split(',').map(Number);
-      const px = ex * TILE_SIZE + TILE_SIZE / 2;
-      const py = ey * TILE_SIZE + TILE_SIZE / 2;
-      this.advRenderer.addPulsingLight(px, py, 80, 'rgba(0, 255, 150, 0.4)', 0.6, 2);
+    // Свечение пикапов
+    for (const pickup of this.pickups) {
+      let color = 'rgba(0, 255, 100, 0.2)';
+      if (pickup.type === 'ammo') color = 'rgba(255, 200, 50, 0.2)';
+      else if (pickup.type === 'armor') color = 'rgba(50, 200, 255, 0.2)';
+      
+      const pulse = Math.sin(this.gameTime * 3 + pickup.bobOffset) * 0.4 + 0.6;
+      const pickupGlow = ctx.createRadialGradient(pickup.x, pickup.y, 0, pickup.x, pickup.y, 45);
+      pickupGlow.addColorStop(0, color);
+      pickupGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = pickupGlow;
+      ctx.beginPath();
+      ctx.arc(pickup.x, pickup.y, 45, 0, Math.PI * 2);
+      ctx.fill();
     }
+    
+    ctx.restore();
+  }
+
+  private renderPostProcessing(ctx: CanvasRenderingContext2D, w: number, h: number) {
+    // Виньетка
+    const vignetteGradient = ctx.createRadialGradient(w / 2, h / 2, w * 0.25, w / 2, h / 2, w * 0.85);
+    vignetteGradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    vignetteGradient.addColorStop(0.5, 'rgba(0, 0, 0, 0.15)');
+    vignetteGradient.addColorStop(1, 'rgba(0, 0, 0, 0.6)');
+    ctx.fillStyle = vignetteGradient;
+    ctx.fillRect(0, 0, w, h);
+    
+    // Лёгкий туман
+    const fogTime = this.gameTime * 0.2;
+    ctx.fillStyle = `rgba(15, 20, 35, ${0.08 + Math.sin(fogTime) * 0.03})`;
+    ctx.fillRect(0, 0, w, h);
   }
 
   private renderAmbientParticles(ctx: CanvasRenderingContext2D) {
@@ -1520,8 +1757,8 @@ export class DoomEngine {
       // Render with soft glow
       ctx.save();
       ctx.globalAlpha = p.alpha * (0.5 + Math.sin(this.gameTime * 2 + p.x) * 0.5);
-      ctx.fillStyle = '#aabbcc';
-      ctx.shadowColor = '#aabbcc';
+      ctx.fillStyle = '#8899aa';
+      ctx.shadowColor = '#8899aa';
       ctx.shadowBlur = 3;
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
@@ -1757,36 +1994,124 @@ export class DoomEngine {
       ctx.globalAlpha = decal.alpha;
       
       if (decal.type === 'blood') {
-        // Пятно крови - несколько кругов
-        ctx.fillStyle = decal.color;
+        // Реалистичное пятно крови с несколькими слоями
+        // Основное пятно с градиентом
+        const mainGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, decal.size * 0.6);
+        mainGrad.addColorStop(0, '#4a0000');
+        mainGrad.addColorStop(0.5, decal.color);
+        mainGrad.addColorStop(1, 'rgba(60, 0, 0, 0.3)');
+        ctx.fillStyle = mainGrad;
         ctx.beginPath();
         ctx.arc(0, 0, decal.size * 0.5, 0, Math.PI * 2);
         ctx.fill();
+        
+        // Дополнительные капли с разными размерами
+        const droplets = [
+          { x: decal.size * 0.35, y: decal.size * 0.25, r: 0.3 },
+          { x: -decal.size * 0.3, y: decal.size * 0.2, r: 0.25 },
+          { x: decal.size * 0.1, y: -decal.size * 0.35, r: 0.2 },
+          { x: -decal.size * 0.4, y: -decal.size * 0.15, r: 0.22 },
+          { x: decal.size * 0.45, y: -decal.size * 0.1, r: 0.18 },
+        ];
+        
+        for (const drop of droplets) {
+          const dropGrad = ctx.createRadialGradient(drop.x, drop.y, 0, drop.x, drop.y, decal.size * drop.r);
+          dropGrad.addColorStop(0, '#5a0000');
+          dropGrad.addColorStop(0.6, decal.color);
+          dropGrad.addColorStop(1, 'rgba(50, 0, 0, 0)');
+          ctx.fillStyle = dropGrad;
+          ctx.beginPath();
+          ctx.arc(drop.x, drop.y, decal.size * drop.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        
+        // Тёмный центр (более густая кровь)
+        ctx.fillStyle = 'rgba(30, 0, 0, 0.5)';
         ctx.beginPath();
-        ctx.arc(decal.size * 0.3, decal.size * 0.2, decal.size * 0.35, 0, Math.PI * 2);
+        ctx.arc(0, 0, decal.size * 0.15, 0, Math.PI * 2);
         ctx.fill();
+        
+        // Блик (влажность)
+        ctx.fillStyle = 'rgba(255, 100, 100, 0.15)';
         ctx.beginPath();
-        ctx.arc(-decal.size * 0.25, decal.size * 0.15, decal.size * 0.3, 0, Math.PI * 2);
+        ctx.ellipse(-decal.size * 0.1, -decal.size * 0.15, decal.size * 0.12, decal.size * 0.08, -0.5, 0, Math.PI * 2);
         ctx.fill();
+        
       } else if (decal.type === 'crack') {
-        ctx.strokeStyle = decal.color;
+        // Реалистичная трещина от пули
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
         ctx.lineWidth = 2;
+        
+        // Центральная трещина
         ctx.beginPath();
-        ctx.moveTo(-decal.size / 2, 0);
-        ctx.lineTo(0, -decal.size * 0.3);
-        ctx.lineTo(decal.size / 2, 0);
-        ctx.lineTo(0, decal.size * 0.3);
-        ctx.closePath();
+        ctx.moveTo(-decal.size * 0.5, 0);
+        ctx.lineTo(-decal.size * 0.15, decal.size * 0.1);
+        ctx.lineTo(0, 0);
+        ctx.lineTo(decal.size * 0.15, -decal.size * 0.1);
+        ctx.lineTo(decal.size * 0.5, 0);
         ctx.stroke();
+        
+        // Радиальные трещины
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+        for (let i = 0; i < 4; i++) {
+          const angle = (i / 4) * Math.PI * 2 + 0.4;
+          const len = decal.size * (0.3 + Math.random() * 0.2);
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(Math.cos(angle) * len, Math.sin(angle) * len);
+          ctx.stroke();
+        }
+        
+        // Точка удара (углубление)
+        const impactGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, decal.size * 0.15);
+        impactGrad.addColorStop(0, 'rgba(0, 0, 0, 0.7)');
+        impactGrad.addColorStop(0.5, 'rgba(30, 30, 30, 0.4)');
+        impactGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = impactGrad;
+        ctx.beginPath();
+        ctx.arc(0, 0, decal.size * 0.15, 0, Math.PI * 2);
+        ctx.fill();
+        
       } else if (decal.type === 'scorch') {
-        const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, decal.size);
-        gradient.addColorStop(0, 'rgba(20, 20, 20, 0.8)');
-        gradient.addColorStop(0.5, 'rgba(40, 30, 20, 0.5)');
-        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        ctx.fillStyle = gradient;
+        // Реалистичный ожог/взрыв
+        // Внешнее кольцо
+        const outerGrad = ctx.createRadialGradient(0, 0, decal.size * 0.3, 0, 0, decal.size);
+        outerGrad.addColorStop(0, 'rgba(60, 40, 20, 0.6)');
+        outerGrad.addColorStop(0.4, 'rgba(40, 30, 15, 0.4)');
+        outerGrad.addColorStop(0.7, 'rgba(20, 15, 10, 0.2)');
+        outerGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = outerGrad;
         ctx.beginPath();
         ctx.arc(0, 0, decal.size, 0, Math.PI * 2);
         ctx.fill();
+        
+        // Центральное чёрное пятно
+        const innerGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, decal.size * 0.4);
+        innerGrad.addColorStop(0, 'rgba(10, 10, 10, 0.9)');
+        innerGrad.addColorStop(0.6, 'rgba(25, 20, 15, 0.7)');
+        innerGrad.addColorStop(1, 'rgba(40, 30, 20, 0.3)');
+        ctx.fillStyle = innerGrad;
+        ctx.beginPath();
+        ctx.arc(0, 0, decal.size * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Искривлённые лучи от взрыва
+        ctx.strokeStyle = 'rgba(30, 25, 15, 0.4)';
+        ctx.lineWidth = 2;
+        for (let i = 0; i < 8; i++) {
+          const angle = (i / 8) * Math.PI * 2;
+          const len = decal.size * (0.5 + Math.sin(i * 2.5) * 0.3);
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(angle) * decal.size * 0.2, Math.sin(angle) * decal.size * 0.2);
+          ctx.quadraticCurveTo(
+            Math.cos(angle + 0.2) * len * 0.6, 
+            Math.sin(angle + 0.2) * len * 0.6,
+            Math.cos(angle) * len, 
+            Math.sin(angle) * len
+          );
+          ctx.stroke();
+        }
       }
       
       ctx.restore();
@@ -2631,51 +2956,186 @@ export class DoomEngine {
   }
 
   private renderParticles(ctx: CanvasRenderingContext2D) {
-    for (const p of this.particles) {
+    this.renderParticlesAdvanced(ctx);
+  }
+
+  private renderParticlesAdvanced(ctx: CanvasRenderingContext2D) {
+    // Sort particles by type for better blending
+    const sortedParticles = [...this.particles].sort((a, b) => {
+      const order: Record<string, number> = { smoke: 0, blood: 1, gib: 2, shell: 3, spark: 4, ember: 5, dust: 6, explosion: 7, electric: 8 };
+      return (order[a.type] || 0) - (order[b.type] || 0);
+    });
+    
+    for (const p of sortedParticles) {
       const alpha = Math.min(1, p.life / p.maxLife);
+      const fadeAlpha = p.life < 0.2 ? p.life / 0.2 : 1;
       
       ctx.save();
       ctx.translate(p.x, p.y);
       ctx.rotate(p.rotation);
-      ctx.globalAlpha = alpha;
+      ctx.globalAlpha = alpha * fadeAlpha;
       
       if (p.type === 'spark') {
-        ctx.fillStyle = p.color;
+        // Улучшенные искры с ореолом
+        const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, p.size * 2);
+        gradient.addColorStop(0, '#ffffff');
+        gradient.addColorStop(0.3, p.color);
+        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        
+        ctx.fillStyle = gradient;
         ctx.shadowColor = p.color;
-        ctx.shadowBlur = 5;
+        ctx.shadowBlur = 8;
         ctx.beginPath();
-        ctx.arc(0, 0, p.size * alpha, 0, Math.PI * 2);
+        ctx.arc(0, 0, p.size * alpha * 1.5, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Центральное ядро
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(0, 0, p.size * alpha * 0.5, 0, Math.PI * 2);
         ctx.fill();
         
       } else if (p.type === 'blood') {
-        ctx.fillStyle = p.color;
+        // Реалистичная кровь с разбрызгиванием
+        const size = p.size * (0.6 + alpha * 0.4);
+        
+        // Основная капля
+        const bloodGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, size);
+        bloodGrad.addColorStop(0, p.color);
+        bloodGrad.addColorStop(0.7, p.color.replace('0', '3'));
+        bloodGrad.addColorStop(1, 'rgba(80, 0, 0, 0)');
+        
+        ctx.fillStyle = bloodGrad;
         ctx.beginPath();
-        ctx.arc(0, 0, p.size * (0.5 + alpha * 0.5), 0, Math.PI * 2);
+        ctx.arc(0, 0, size, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Блик
+        ctx.fillStyle = 'rgba(255, 100, 100, 0.3)';
+        ctx.beginPath();
+        ctx.arc(-size * 0.3, -size * 0.3, size * 0.3, 0, Math.PI * 2);
         ctx.fill();
         
       } else if (p.type === 'shell') {
-        ctx.fillStyle = p.color;
-        ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
-        ctx.fillStyle = '#b8956e';
+        // Детализированная гильза
+        const shellGrad = ctx.createLinearGradient(-p.size / 2, 0, p.size / 2, 0);
+        shellGrad.addColorStop(0, '#e8c896');
+        shellGrad.addColorStop(0.3, '#d4a574');
+        shellGrad.addColorStop(0.7, p.color);
+        shellGrad.addColorStop(1, '#8b6940');
+        
+        ctx.fillStyle = shellGrad;
+        ctx.beginPath();
+        ctx.roundRect(-p.size / 2, -p.size / 4, p.size, p.size / 2, 1);
+        ctx.fill();
+        
+        // Капсюль
+        ctx.fillStyle = '#c0a070';
         ctx.beginPath();
         ctx.arc(p.size / 2 - 1, 0, p.size / 4, 0, Math.PI * 2);
         ctx.fill();
         
+        // Блик
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.fillRect(-p.size / 2 + 1, -p.size / 4, p.size * 0.6, p.size / 8);
+        
       } else if (p.type === 'gib') {
-        ctx.fillStyle = p.color;
+        // Улучшенные куски с текстурой
+        const gibGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, p.size);
+        gibGrad.addColorStop(0, p.color);
+        gibGrad.addColorStop(0.5, p.color.replace(')', ', 0.8)').replace('rgb', 'rgba'));
+        gibGrad.addColorStop(1, '#330000');
+        
+        ctx.fillStyle = gibGrad;
         ctx.beginPath();
-        ctx.moveTo(-p.size / 2, 0);
-        ctx.lineTo(0, -p.size / 2);
-        ctx.lineTo(p.size / 2, 0);
-        ctx.lineTo(0, p.size / 2);
+        // Неровная форма
+        const points = 5 + Math.floor(p.rotation * 2) % 3;
+        for (let i = 0; i < points; i++) {
+          const angle = (i / points) * Math.PI * 2;
+          const dist = p.size * (0.6 + Math.sin(angle * 3 + p.rotation) * 0.4);
+          const px = Math.cos(angle) * dist;
+          const py = Math.sin(angle) * dist;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
         ctx.closePath();
         ctx.fill();
         
-      } else if (p.type === 'smoke') {
-        ctx.fillStyle = `rgba(100, 100, 100, ${alpha * 0.5})`;
+        // Кровавая текстура
+        ctx.fillStyle = 'rgba(100, 0, 0, 0.5)';
         ctx.beginPath();
-        ctx.arc(0, 0, p.size * (2 - alpha), 0, Math.PI * 2);
+        ctx.arc(p.size * 0.2, -p.size * 0.2, p.size * 0.3, 0, Math.PI * 2);
         ctx.fill();
+        
+      } else if (p.type === 'smoke') {
+        // Реалистичный дым с мягкими краями
+        const smokeSize = p.size * (2.5 - alpha * 1.5);
+        const smokeGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, smokeSize);
+        smokeGrad.addColorStop(0, `rgba(80, 80, 90, ${alpha * 0.4})`);
+        smokeGrad.addColorStop(0.4, `rgba(60, 60, 70, ${alpha * 0.25})`);
+        smokeGrad.addColorStop(0.7, `rgba(40, 40, 50, ${alpha * 0.1})`);
+        smokeGrad.addColorStop(1, 'rgba(30, 30, 40, 0)');
+        
+        ctx.fillStyle = smokeGrad;
+        ctx.beginPath();
+        ctx.arc(0, 0, smokeSize, 0, Math.PI * 2);
+        ctx.fill();
+        
+      } else if (p.type === 'explosion') {
+        // Взрывная частица
+        const explosionGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, p.size * 2);
+        explosionGrad.addColorStop(0, '#ffffff');
+        explosionGrad.addColorStop(0.2, '#ffff88');
+        explosionGrad.addColorStop(0.4, '#ffaa44');
+        explosionGrad.addColorStop(0.7, '#ff4400');
+        explosionGrad.addColorStop(1, 'rgba(100, 20, 0, 0)');
+        
+        ctx.shadowColor = '#ff6600';
+        ctx.shadowBlur = 15;
+        ctx.fillStyle = explosionGrad;
+        ctx.beginPath();
+        ctx.arc(0, 0, p.size * (1 + (1 - alpha) * 0.5), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        
+      } else if (p.type === 'ember') {
+        // Тлеющие угольки
+        const emberPulse = Math.sin(this.gameTime * 10 + p.x) * 0.3 + 0.7;
+        ctx.shadowColor = '#ff4400';
+        ctx.shadowBlur = 5;
+        ctx.fillStyle = `rgba(255, ${100 + emberPulse * 100}, 0, ${alpha * emberPulse})`;
+        ctx.beginPath();
+        ctx.arc(0, 0, p.size * alpha, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        
+      } else if (p.type === 'dust') {
+        // Пылевые частицы
+        ctx.fillStyle = `rgba(150, 140, 130, ${alpha * 0.5})`;
+        ctx.beginPath();
+        ctx.arc(0, 0, p.size * (1 + (1 - alpha) * 0.3), 0, Math.PI * 2);
+        ctx.fill();
+        
+      } else if (p.type === 'electric') {
+        // Электрические частицы
+        ctx.shadowColor = '#00aaff';
+        ctx.shadowBlur = 10;
+        ctx.strokeStyle = `rgba(100, 200, 255, ${alpha})`;
+        ctx.lineWidth = 2;
+        
+        // Случайная молния
+        ctx.beginPath();
+        ctx.moveTo(-p.size, 0);
+        ctx.lineTo(-p.size * 0.3, p.size * 0.5 * (Math.random() - 0.5));
+        ctx.lineTo(p.size * 0.3, p.size * 0.5 * (Math.random() - 0.5));
+        ctx.lineTo(p.size, 0);
+        ctx.stroke();
+        
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(0, 0, p.size * 0.3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
       }
       
       ctx.restore();
@@ -2684,188 +3144,422 @@ export class DoomEngine {
     ctx.shadowBlur = 0;
   }
 
-  private renderLights(ctx: CanvasRenderingContext2D) {
-    ctx.globalCompositeOperation = 'lighter';
-    
-    for (const light of this.lights) {
-      const gradient = ctx.createRadialGradient(light.x, light.y, 0, light.x, light.y, light.radius);
-      gradient.addColorStop(0, light.color);
-      gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-      
-      ctx.globalAlpha = light.intensity;
-      ctx.fillStyle = gradient;
-      ctx.beginPath();
-      ctx.arc(light.x, light.y, light.radius, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.globalAlpha = 1;
-  }
-
-  private renderVignette(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    const gradient = ctx.createRadialGradient(w / 2, h / 2, w * 0.3, w / 2, h / 2, w * 0.8);
-    gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
-    gradient.addColorStop(1, 'rgba(0, 0, 0, 0.6)');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, w, h);
-  }
+  // Освещение теперь обрабатывается через advRenderer.addLight() в renderDynamicLighting()
+  // Виньетка теперь является частью post-processing в AdvancedRenderer
 
   private renderMinimap(ctx: CanvasRenderingContext2D, w: number, _h: number) {
+    this.renderMinimapAdvanced(ctx, w, _h);
+  }
+
+  private renderMinimapAdvanced(ctx: CanvasRenderingContext2D, w: number, _h: number) {
     if (!this.level) return;
     
-    const mapSize = 140;
+    const mapSize = 150;
     const mapX = w - mapSize - 15;
     const mapY = 15;
     const scale = mapSize / Math.max(this.level.width, this.level.height);
     
-    // Фон
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.strokeStyle = 'rgba(100, 100, 100, 0.5)';
-    ctx.lineWidth = 2;
+    ctx.save();
+    
+    // Фон с градиентом
+    const bgGrad = ctx.createLinearGradient(mapX - 10, mapY - 10, mapX + mapSize + 10, mapY + mapSize + 10);
+    bgGrad.addColorStop(0, 'rgba(20, 25, 35, 0.9)');
+    bgGrad.addColorStop(1, 'rgba(10, 15, 25, 0.9)');
+    ctx.fillStyle = bgGrad;
     ctx.beginPath();
-    ctx.roundRect(mapX - 8, mapY - 8, mapSize + 16, mapSize + 16, 8);
+    ctx.roundRect(mapX - 10, mapY - 10, mapSize + 20, mapSize + 20, 10);
     ctx.fill();
+    
+    // Рамка с свечением
+    ctx.strokeStyle = 'rgba(80, 120, 160, 0.5)';
+    ctx.lineWidth = 2;
     ctx.stroke();
     
-    // Карта
+    // Внутренняя подсветка
+    ctx.strokeStyle = 'rgba(100, 150, 200, 0.2)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(mapX - 8, mapY - 8, mapSize + 16, mapSize + 16, 8);
+    ctx.stroke();
+    
+    // Заголовок
+    ctx.fillStyle = 'rgba(150, 180, 220, 0.8)';
+    ctx.font = 'bold 10px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('TACTICAL MAP', mapX + mapSize / 2, mapY - 2);
+    
+    // Карта с улучшенным рендерингом
     for (let y = 0; y < this.level.height; y++) {
       for (let x = 0; x < this.level.width; x++) {
         const tile = this.level.tiles[y][x];
-        ctx.fillStyle = tile > 0 ? '#555' : '#222';
-        ctx.fillRect(mapX + x * scale, mapY + y * scale, scale + 0.5, scale + 0.5);
+        const tx = mapX + x * scale;
+        const ty = mapY + y * scale;
+        
+        if (tile > 0) {
+          // Стены
+          ctx.fillStyle = '#4a5060';
+          ctx.fillRect(tx, ty, scale + 0.5, scale + 0.5);
+          // 3D эффект
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+          ctx.fillRect(tx, ty, scale + 0.5, 1);
+          ctx.fillRect(tx, ty, 1, scale + 0.5);
+        } else {
+          // Пол
+          ctx.fillStyle = '#1a2030';
+          ctx.fillRect(tx, ty, scale + 0.5, scale + 0.5);
+        }
+        
+        // Выход
+        if (this.level.exitTiles.has(`${x},${y}`)) {
+          const exitPulse = Math.sin(this.gameTime * 3) * 0.3 + 0.7;
+          ctx.fillStyle = `rgba(0, 255, 150, ${exitPulse * 0.5})`;
+          ctx.fillRect(tx, ty, scale + 0.5, scale + 0.5);
+        }
       }
     }
     
-    // Враги
+    // Сканирующая линия
+    const scanLine = ((this.gameTime * 30) % mapSize);
+    ctx.fillStyle = 'rgba(0, 200, 255, 0.1)';
+    ctx.fillRect(mapX, mapY + scanLine, mapSize, 2);
+    
+    // Враги с пульсацией
     for (const enemy of this.enemies) {
       if (!enemy.alive) continue;
+      
+      const ex = mapX + (enemy.x / TILE_SIZE) * scale;
+      const ey = mapY + (enemy.y / TILE_SIZE) * scale;
+      const enemyPulse = Math.sin(this.gameTime * 5 + enemy.x) * 0.3 + 0.7;
+      
+      // Внешнее свечение
+      ctx.fillStyle = `rgba(255, 80, 80, ${enemyPulse * 0.3})`;
+      ctx.beginPath();
+      ctx.arc(ex, ey, 4, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Точка врага
       ctx.fillStyle = '#ff4444';
       ctx.beginPath();
-      ctx.arc(mapX + (enemy.x / TILE_SIZE) * scale, mapY + (enemy.y / TILE_SIZE) * scale, 2, 0, Math.PI * 2);
+      ctx.arc(ex, ey, 2, 0, Math.PI * 2);
       ctx.fill();
     }
     
-    // Пикапы
+    // Пикапы с свечением
     for (const pickup of this.pickups) {
-      ctx.fillStyle = pickup.type === 'health' ? '#00ff00' : pickup.type === 'ammo' ? '#ffaa00' : '#00aaff';
+      const px = mapX + (pickup.x / TILE_SIZE) * scale;
+      const py = mapY + (pickup.y / TILE_SIZE) * scale;
+      const pickupPulse = Math.sin(this.gameTime * 4 + pickup.bobOffset) * 0.3 + 0.7;
+      
+      let color: string;
+      if (pickup.type === 'health') color = '#00ff88';
+      else if (pickup.type === 'ammo') color = '#ffcc00';
+      else color = '#00ccff';
+      
+      ctx.fillStyle = color.replace(')', `, ${pickupPulse * 0.3})`).replace('#', 'rgba(').replace(/(.{2})(.{2})(.{2})/, (_, r, g, b) => `${parseInt(r, 16)}, ${parseInt(g, 16)}, ${parseInt(b, 16)}`);
       ctx.beginPath();
-      ctx.arc(mapX + (pickup.x / TILE_SIZE) * scale, mapY + (pickup.y / TILE_SIZE) * scale, 2, 0, Math.PI * 2);
+      ctx.arc(px, py, 4, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(px, py, 2, 0, Math.PI * 2);
       ctx.fill();
     }
     
-    // Игрок
-    ctx.fillStyle = '#00ff00';
-    const px = mapX + (this.player.x / TILE_SIZE) * scale;
-    const py = mapY + (this.player.y / TILE_SIZE) * scale;
+    // Игрок с направлением и полем зрения
+    const playerX = mapX + (this.player.x / TILE_SIZE) * scale;
+    const playerY = mapY + (this.player.y / TILE_SIZE) * scale;
+    
+    // Поле зрения
+    ctx.fillStyle = 'rgba(0, 255, 100, 0.1)';
     ctx.beginPath();
-    ctx.arc(px, py, 4, 0, Math.PI * 2);
+    ctx.moveTo(playerX, playerY);
+    ctx.arc(playerX, playerY, 25, this.player.angle - 0.5, this.player.angle + 0.5);
+    ctx.closePath();
     ctx.fill();
     
     // Направление взгляда
-    ctx.strokeStyle = '#00ff00';
+    ctx.strokeStyle = 'rgba(0, 255, 100, 0.6)';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(px, py);
-    ctx.lineTo(px + Math.cos(this.player.angle) * 10, py + Math.sin(this.player.angle) * 10);
+    ctx.moveTo(playerX, playerY);
+    ctx.lineTo(playerX + Math.cos(this.player.angle) * 15, playerY + Math.sin(this.player.angle) * 15);
     ctx.stroke();
+    
+    // Игрок
+    ctx.shadowColor = '#00ff88';
+    ctx.shadowBlur = 5;
+    ctx.fillStyle = '#00ff88';
+    ctx.beginPath();
+    ctx.arc(playerX, playerY, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    
+    // Внутренняя точка
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(playerX, playerY, 2, 0, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.restore();
   }
 
   private renderHUD(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    // Полоса здоровья
-    const healthBarWidth = 220;
-    const healthBarHeight = 22;
-    const healthX = 20;
-    const healthY = h - 55;
+    this.renderHUDAdvanced(ctx, w, h);
+  }
+
+  private renderHUDAdvanced(ctx: CanvasRenderingContext2D, w: number, h: number) {
+    ctx.save();
     
-    // Фон полоски
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.strokeStyle = 'rgba(100, 100, 100, 0.5)';
-    ctx.lineWidth = 2;
+    // ===== ЛЕВАЯ ПАНЕЛЬ - ЗДОРОВЬЕ И ПАТРОНЫ =====
+    const panelX = 15;
+    const panelY = h - 120;
+    const panelWidth = 250;
+    const panelHeight = 105;
+    
+    // Фон панели с градиентом
+    const panelGrad = ctx.createLinearGradient(panelX, panelY, panelX + panelWidth, panelY + panelHeight);
+    panelGrad.addColorStop(0, 'rgba(15, 20, 30, 0.9)');
+    panelGrad.addColorStop(1, 'rgba(25, 30, 40, 0.85)');
+    ctx.fillStyle = panelGrad;
     ctx.beginPath();
-    ctx.roundRect(healthX - 5, healthY - 5, healthBarWidth + 10, healthBarHeight + 10, 6);
+    ctx.roundRect(panelX, panelY, panelWidth, panelHeight, 10);
     ctx.fill();
+    
+    // Рамка
+    ctx.strokeStyle = 'rgba(80, 100, 140, 0.5)';
+    ctx.lineWidth = 2;
     ctx.stroke();
     
-    ctx.fillStyle = '#1a1a1a';
-    ctx.fillRect(healthX, healthY, healthBarWidth, healthBarHeight);
+    // Угловые акценты
+    ctx.strokeStyle = 'rgba(100, 150, 200, 0.6)';
+    ctx.lineWidth = 2;
+    const cornerSize = 12;
+    // Верхний левый
+    ctx.beginPath();
+    ctx.moveTo(panelX + cornerSize, panelY);
+    ctx.lineTo(panelX, panelY);
+    ctx.lineTo(panelX, panelY + cornerSize);
+    ctx.stroke();
+    // Нижний правый
+    ctx.beginPath();
+    ctx.moveTo(panelX + panelWidth - cornerSize, panelY + panelHeight);
+    ctx.lineTo(panelX + panelWidth, panelY + panelHeight);
+    ctx.lineTo(panelX + panelWidth, panelY + panelHeight - cornerSize);
+    ctx.stroke();
+    
+    // === ЗДОРОВЬЕ ===
+    const healthBarWidth = 180;
+    const healthBarHeight = 20;
+    const healthX = panelX + 55;
+    const healthY = panelY + 15;
+    
+    // Иконка сердца
+    ctx.shadowColor = '#ff4444';
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = '#ff4444';
+    ctx.font = 'bold 24px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('♥', panelX + 30, healthY + 18);
+    ctx.shadowBlur = 0;
+    
+    // Фон полоски здоровья
+    ctx.fillStyle = '#0a0a0a';
+    ctx.beginPath();
+    ctx.roundRect(healthX, healthY, healthBarWidth, healthBarHeight, 4);
+    ctx.fill();
+    
+    // Внутренняя рамка
+    ctx.strokeStyle = 'rgba(60, 60, 80, 0.8)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
     
     const healthPercent = this.player.health / this.player.maxHealth;
     
-    // Градиент здоровья
-    const healthGradient = ctx.createLinearGradient(healthX, healthY, healthX, healthY + healthBarHeight);
-    if (healthPercent > 0.5) {
-      healthGradient.addColorStop(0, '#44ff44');
-      healthGradient.addColorStop(1, '#22aa22');
-    } else if (healthPercent > 0.25) {
-      healthGradient.addColorStop(0, '#ffcc00');
-      healthGradient.addColorStop(1, '#cc9900');
-    } else {
-      healthGradient.addColorStop(0, '#ff4444');
-      healthGradient.addColorStop(1, '#aa2222');
+    // Полоска здоровья с градиентом
+    if (healthPercent > 0) {
+      const healthGradient = ctx.createLinearGradient(healthX, healthY, healthX, healthY + healthBarHeight);
+      if (healthPercent > 0.5) {
+        healthGradient.addColorStop(0, '#66ff66');
+        healthGradient.addColorStop(0.5, '#44dd44');
+        healthGradient.addColorStop(1, '#22aa22');
+      } else if (healthPercent > 0.25) {
+        healthGradient.addColorStop(0, '#ffdd44');
+        healthGradient.addColorStop(0.5, '#ffcc00');
+        healthGradient.addColorStop(1, '#cc9900');
+      } else {
+        healthGradient.addColorStop(0, '#ff6666');
+        healthGradient.addColorStop(0.5, '#ff4444');
+        healthGradient.addColorStop(1, '#cc2222');
+        // Пульсация при низком здоровье
+        ctx.shadowColor = '#ff0000';
+        ctx.shadowBlur = Math.sin(this.gameTime * 8) * 5 + 5;
+      }
+      ctx.fillStyle = healthGradient;
+      ctx.beginPath();
+      ctx.roundRect(healthX + 2, healthY + 2, (healthBarWidth - 4) * healthPercent, healthBarHeight - 4, 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      
+      // Блик на полоске
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+      ctx.fillRect(healthX + 2, healthY + 2, (healthBarWidth - 4) * healthPercent, 6);
     }
-    ctx.fillStyle = healthGradient;
-    ctx.fillRect(healthX, healthY, healthBarWidth * healthPercent, healthBarHeight);
     
     // Текст здоровья
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 14px Arial';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 12px monospace';
     ctx.textAlign = 'center';
     ctx.fillText(`${Math.ceil(this.player.health)} / ${this.player.maxHealth}`, healthX + healthBarWidth / 2, healthY + healthBarHeight - 5);
     
-    // Иконка здоровья
-    ctx.fillStyle = '#ff4444';
-    ctx.font = '18px Arial';
-    ctx.textAlign = 'left';
-    ctx.fillText('❤', healthX - 2, healthY - 10);
+    // === ПАТРОНЫ ===
+    const ammoY = healthY + 35;
     
-    // Патроны
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.beginPath();
-    ctx.roundRect(15, h - 95, 110, 35, 6);
-    ctx.fill();
-    
+    // Иконка патронов
+    ctx.shadowColor = '#ffaa00';
+    ctx.shadowBlur = 8;
     ctx.fillStyle = '#ffaa00';
-    ctx.font = 'bold 22px Arial';
+    ctx.font = 'bold 20px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('⬢', panelX + 30, ammoY + 15);
+    ctx.shadowBlur = 0;
+    
+    // Счётчик патронов
+    const ammoColor = this.player.ammo < 30 ? '#ff6666' : this.player.ammo < 100 ? '#ffcc00' : '#ffaa00';
+    ctx.shadowColor = ammoColor;
+    ctx.shadowBlur = 5;
+    ctx.fillStyle = ammoColor;
+    ctx.font = 'bold 28px monospace';
     ctx.textAlign = 'left';
-    ctx.fillText(`🔫 ${this.player.ammo}`, 25, h - 68);
+    ctx.fillText(`${this.player.ammo}`, healthX, ammoY + 20);
+    ctx.shadowBlur = 0;
     
-    // Статистика слева сверху
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.beginPath();
-    ctx.roundRect(15, 15, 150, 85, 8);
-    ctx.fill();
+    // Подпись
+    ctx.fillStyle = 'rgba(150, 150, 180, 0.8)';
+    ctx.font = '11px monospace';
+    ctx.fillText('AMMO', healthX + 80, ammoY + 18);
     
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 18px Arial';
-    ctx.textAlign = 'left';
-    ctx.fillText(`WAVE ${this.wave}`, 25, 40);
-    
-    ctx.fillStyle = '#ff6666';
-    ctx.font = '16px Arial';
-    ctx.fillText(`Kills: ${this.kills}`, 25, 62);
-    
-    ctx.fillStyle = '#ffcc00';
-    ctx.fillText(`Score: ${this.score}`, 25, 84);
-    
-    // Следующая волна
-    if (!this.waveInProgress && this.waveTimer > 0) {
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-      ctx.beginPath();
-      ctx.roundRect(w / 2 - 120, 80, 240, 50, 10);
-      ctx.fill();
+    // === БРОНЯ (если есть) ===
+    if (this.player.maxHealth > 100) {
+      const armorY = ammoY + 30;
+      const armorPercent = (this.player.maxHealth - 100) / 50;
       
-      ctx.fillStyle = '#ffff00';
-      ctx.font = 'bold 24px Arial';
+      ctx.shadowColor = '#00ccff';
+      ctx.shadowBlur = 5;
+      ctx.fillStyle = '#00ccff';
+      ctx.font = 'bold 18px Arial';
       ctx.textAlign = 'center';
-      ctx.fillText(`WAVE ${this.wave + 1} IN ${Math.ceil(this.waveTimer)}`, w / 2, 115);
+      ctx.fillText('🛡', panelX + 30, armorY + 12);
+      ctx.shadowBlur = 0;
+      
+      // Индикатор брони
+      ctx.fillStyle = '#0a0a0a';
+      ctx.fillRect(healthX, armorY, 100, 12);
+      
+      const armorGrad = ctx.createLinearGradient(healthX, armorY, healthX + 100, armorY);
+      armorGrad.addColorStop(0, '#00aaff');
+      armorGrad.addColorStop(1, '#0066cc');
+      ctx.fillStyle = armorGrad;
+      ctx.fillRect(healthX + 1, armorY + 1, 98 * armorPercent, 10);
     }
     
-    // FPS
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-    ctx.font = '12px Arial';
+    // ===== ВЕРХНЯЯ ЛЕВАЯ ПАНЕЛЬ - СТАТИСТИКА =====
+    const statsX = 15;
+    const statsY = 15;
+    const statsWidth = 180;
+    const statsHeight = 100;
+    
+    // Фон
+    const statsGrad = ctx.createLinearGradient(statsX, statsY, statsX + statsWidth, statsY + statsHeight);
+    statsGrad.addColorStop(0, 'rgba(15, 20, 30, 0.9)');
+    statsGrad.addColorStop(1, 'rgba(25, 30, 40, 0.85)');
+    ctx.fillStyle = statsGrad;
+    ctx.beginPath();
+    ctx.roundRect(statsX, statsY, statsWidth, statsHeight, 10);
+    ctx.fill();
+    
+    ctx.strokeStyle = 'rgba(80, 100, 140, 0.5)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    // Волна с эффектом
+    ctx.shadowColor = '#4488ff';
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = '#4488ff';
+    ctx.font = 'bold 24px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`WAVE ${this.wave}`, statsX + 15, statsY + 32);
+    ctx.shadowBlur = 0;
+    
+    // Разделитель
+    ctx.strokeStyle = 'rgba(80, 100, 140, 0.3)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(statsX + 10, statsY + 42);
+    ctx.lineTo(statsX + statsWidth - 10, statsY + 42);
+    ctx.stroke();
+    
+    // Убийства
+    ctx.fillStyle = '#ff6666';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText(`KILLS`, statsX + 15, statsY + 60);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 18px monospace';
     ctx.textAlign = 'right';
-    ctx.fillText(`FPS: ${this.fps}`, w - 20, h - 10);
+    ctx.fillText(`${this.kills}`, statsX + statsWidth - 15, statsY + 60);
+    
+    // Очки
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ffcc00';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText(`SCORE`, statsX + 15, statsY + 85);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 18px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${this.score}`, statsX + statsWidth - 15, statsY + 85);
+    
+    // ===== ПРЕДУПРЕЖДЕНИЕ О СЛЕДУЮЩЕЙ ВОЛНЕ =====
+    if (!this.waveInProgress && this.waveTimer > 0) {
+      const alertWidth = 280;
+      const alertHeight = 60;
+      const alertX = w / 2 - alertWidth / 2;
+      const alertY = 100;
+      
+      const alertPulse = Math.sin(this.gameTime * 4) * 0.2 + 0.8;
+      
+      // Фон с пульсацией
+      ctx.fillStyle = `rgba(20, 25, 40, ${alertPulse * 0.95})`;
+      ctx.beginPath();
+      ctx.roundRect(alertX, alertY, alertWidth, alertHeight, 12);
+      ctx.fill();
+      
+      // Рамка с свечением
+      ctx.shadowColor = '#ffcc00';
+      ctx.shadowBlur = 15 * alertPulse;
+      ctx.strokeStyle = `rgba(255, 200, 0, ${alertPulse})`;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      
+      // Текст
+      ctx.fillStyle = '#ffcc00';
+      ctx.font = 'bold 16px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('INCOMING WAVE', w / 2, alertY + 25);
+      
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 24px monospace';
+      ctx.fillText(`${this.wave + 1} in ${Math.ceil(this.waveTimer)}`, w / 2, alertY + 50);
+    }
+    
+    // ===== FPS И ОТЛАДКА =====
+    ctx.fillStyle = 'rgba(100, 100, 100, 0.7)';
+    ctx.font = '11px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(`FPS: ${this.fps}`, w - 15, h - 10);
+    ctx.fillText(`Particles: ${this.particles.length}`, w - 15, h - 22);
+    
+    ctx.restore();
   }
 
   private updateFps() {
