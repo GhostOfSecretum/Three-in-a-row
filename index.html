@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#050508" />
+    <meta name="description" content="Alien Swarm - Top-Down Shooter Game" />
+    <title>Alien Swarm - Extermination Protocol</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html, body {
+        height: 100%;
+        background: #050508;
+        overflow: hidden;
+        cursor: crosshair;
+      }
+      #doom-root {
+        height: 100%;
+        background: #050508;
+      }
+      /* Loading state */
+      #doom-root:empty::before {
+        content: 'LOADING...';
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        color: #ff4444;
+        font-family: Arial, sans-serif;
+        font-size: 24px;
+        font-weight: bold;
+        letter-spacing: 4px;
+        animation: pulse 1s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 0.5; }
+        50% { opacity: 1; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="doom-root"></div>
+  </body>
+</html>
