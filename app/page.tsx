@@ -160,6 +160,22 @@ export default function Home() {
     }
   }, [started]);
 
+  const handleJoystickChange = useCallback((x: number, y: number, active: boolean) => {
+    if (!started) return;
+    appRef.current?.setJoystick(x, y, active);
+    if (active) {
+      appRef.current?.enableAudio();
+    }
+  }, [started]);
+
+  const handleAimChange = useCallback((screenX: number, screenY: number, active: boolean) => {
+    if (!started) return;
+    appRef.current?.setAim(screenX, screenY, active);
+    if (active) {
+      appRef.current?.enableAudio();
+    }
+  }, [started]);
+
   return (
     <main className="doom-root">
       <canvas ref={canvasRef} className="doom-canvas" />
@@ -169,7 +185,11 @@ export default function Home() {
       {ready && started && (
         <>
           <Hud state={state} onRestart={handleRestart} onToggleSound={handleToggleSound} />
-          <ControlsOverlay onControlChange={handleControlChange} />
+          <ControlsOverlay 
+            onControlChange={handleControlChange}
+            onJoystickChange={handleJoystickChange}
+            onAimChange={handleAimChange}
+          />
         </>
       )}
     </main>

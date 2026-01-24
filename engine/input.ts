@@ -9,9 +9,17 @@ export type InputState = {
   fire: boolean;     // Left mouse
   use: boolean;      // E
   lookDelta: number;
+  // Mobile joystick state
+  joystickX: number;  // -1 to 1
+  joystickY: number;  // -1 to 1
+  joystickActive: boolean;
+  // Mobile aim state
+  aimX: number;
+  aimY: number;
+  aimActive: boolean;
 };
 
-export type ControlKey = Exclude<keyof InputState, 'lookDelta'>;
+export type ControlKey = Exclude<keyof InputState, 'lookDelta' | 'joystickX' | 'joystickY' | 'joystickActive' | 'aimX' | 'aimY' | 'aimActive'>;
 
 export function createInputState(): InputState {
   return {
@@ -25,6 +33,12 @@ export function createInputState(): InputState {
     fire: false,
     use: false,
     lookDelta: 0,
+    joystickX: 0,
+    joystickY: 0,
+    joystickActive: false,
+    aimX: 0,
+    aimY: 0,
+    aimActive: false,
   };
 }
 

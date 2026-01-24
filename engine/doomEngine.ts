@@ -432,6 +432,26 @@ export class DoomEngine {
 
   addLookDelta(_delta: number) {}
 
+  setJoystick(x: number, y: number, active: boolean) {
+    this.input.joystickX = x;
+    this.input.joystickY = y;
+    this.input.joystickActive = active;
+  }
+
+  setAim(screenX: number, screenY: number, active: boolean) {
+    this.input.aimX = screenX;
+    this.input.aimY = screenY;
+    this.input.aimActive = active;
+    this.input.fire = active;
+    
+    if (active) {
+      // Update player angle based on touch position
+      const playerScreenX = this.player.x - this.cameraX;
+      const playerScreenY = this.player.y - this.cameraY;
+      this.player.angle = Math.atan2(screenY - playerScreenY, screenX - playerScreenX);
+    }
+  }
+
   restartLevel() {
     this.loadLevel(this.levelIndex);
     this.status = 'running';
@@ -611,17 +631,26 @@ export class DoomEngine {
     let moveX = 0;
     let moveY = 0;
     
-    if (this.input.forward) moveY -= 1;
-    if (this.input.back) moveY += 1;
-    if (this.input.left) moveX -= 1;
-    if (this.input.right) moveX += 1;
+    // Handle joystick input (mobile)
+    if (this.input.joystickActive) {
+      moveX = this.input.joystickX;
+      moveY = this.input.joystickY;
+    } else {
+      // Handle keyboard input (desktop)
+      if (this.input.forward) moveY -= 1;
+      if (this.input.back) moveY += 1;
+      if (this.input.left) moveX -= 1;
+      if (this.input.right) moveX += 1;
+    }
     
     const isMoving = moveX !== 0 || moveY !== 0;
     
     if (isMoving) {
       const len = Math.sqrt(moveX * moveX + moveY * moveY);
-      moveX /= len;
-      moveY /= len;
+      if (len > 1) {
+        moveX /= len;
+        moveY /= len;
+      }
       this.player.walkCycle += dt * 12;
     }
     
@@ -643,7 +672,14 @@ export class DoomEngine {
       this.fireCooldown = FIRE_RATE;
     }
     
-    this.updatePlayerAngle();
+    // Update aim from touch (mobile) or mouse (desktop)
+    if (this.input.aimActive) {
+      const playerScreenX = this.player.x - this.cameraX;
+      const playerScreenY = this.player.y - this.cameraY;
+      this.player.angle = Math.atan2(this.input.aimY - playerScreenY, this.input.aimX - playerScreenX);
+    } else {
+      this.updatePlayerAngle();
+    }
   }
 
   private shoot() {

@@ -12,6 +12,8 @@ export type DoomAppHandle = {
   setControl: (control: ControlKey, active: boolean) => void;
   addLookDelta: (delta: number) => void;
   resize: () => void;
+  setJoystick: (x: number, y: number, active: boolean) => void;
+  setAim: (screenX: number, screenY: number, active: boolean) => void;
 };
 
 export type DoomAppOptions = {
@@ -33,5 +35,7 @@ export async function initDoomMiniApp(options: DoomAppOptions): Promise<DoomAppH
     setControl: (control, active) => engine.setControl(control, active),
     addLookDelta: delta => engine.addLookDelta(delta),
     resize: () => engine.resize(),
+    setJoystick: (x, y, active) => engine.setJoystick(x, y, active),
+    setAim: (screenX, screenY, active) => engine.setAim(screenX, screenY, active),
   };
 }

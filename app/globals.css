@@ -115,6 +115,30 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Virtual joystick styles */
+.virtual-joystick {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Aim zone styles */
+.aim-zone {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Prevent default touch behaviors globally on mobile */
+@media (pointer: coarse) {
+  html, body {
+    touch-action: none;
+    overscroll-behavior: none;
+  }
+}
+
 /* Font smoothing */
 body {
   -webkit-font-smoothing: antialiased;
