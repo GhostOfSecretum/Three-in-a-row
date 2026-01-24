@@ -15,32 +15,61 @@ function VirtualJoystick({ onJoystickChange }: { onJoystickChange?: (x: number, 
   const containerRef = useRef<HTMLDivElement>(null);
   const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
   const [isActive, setIsActive] = useState(false);
-  const originRef = useRef({ x: 0, y: 0 });
-  const currentValueRef = useRef({ x: 0, y: 0 });
-  const activePointerId = useRef<number | null>(null);
+  const stateRef = useRef({
+    active: false,
+    originX: 0,
+    originY: 0,
+    normX: 0,
+    normY: 0,
+    pointerId: null as number | null,
+  });
+  const callbackRef = useRef(onJoystickChange);
+  callbackRef.current = onJoystickChange;
 
   const JOYSTICK_SIZE = 120;
   const KNOB_SIZE = 50;
   const MAX_DISTANCE = (JOYSTICK_SIZE - KNOB_SIZE) / 2;
 
-  // Continuous update while joystick is active
+  // Continuous update loop
   useEffect(() => {
-    if (!isActive) return;
-    
-    let animationId: number;
-    const update = () => {
-      onJoystickChange?.(currentValueRef.current.x, currentValueRef.current.y, true);
-      animationId = requestAnimationFrame(update);
+    let running = true;
+    const loop = () => {
+      if (!running) return;
+      if (stateRef.current.active) {
+        callbackRef.current?.(stateRef.current.normX, stateRef.current.normY, true);
+      }
+      requestAnimationFrame(loop);
     };
-    animationId = requestAnimationFrame(update);
-    
-    return () => {
-      cancelAnimationFrame(animationId);
-    };
-  }, [isActive, onJoystickChange]);
+    requestAnimationFrame(loop);
+    return () => { running = false; };
+  }, []);
 
-  const handlePointerDown = useCallback((e: PointerEvent<HTMLDivElement>) => {
-    if (activePointerId.current !== null) return;
+  const calculateJoystick = (clientX: number, clientY: number) => {
+    const dx = clientX - stateRef.current.originX;
+    const dy = clientY - stateRef.current.originY;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    
+    if (distance > 0) {
+      const clampedDistance = Math.min(distance, MAX_DISTANCE);
+      const normX = (dx / distance) * (clampedDistance / MAX_DISTANCE);
+      const normY = (dy / distance) * (clampedDistance / MAX_DISTANCE);
+      
+      stateRef.current.normX = normX;
+      stateRef.current.normY = normY;
+      
+      setJoystickPos({
+        x: (dx / distance) * clampedDistance,
+        y: (dy / distance) * clampedDistance,
+      });
+    } else {
+      stateRef.current.normX = 0;
+      stateRef.current.normY = 0;
+      setJoystickPos({ x: 0, y: 0 });
+    }
+  };
+
+  const handlePointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    if (stateRef.current.pointerId !== null) return;
     
     e.preventDefault();
     e.stopPropagation();
@@ -48,88 +77,51 @@ function VirtualJoystick({ onJoystickChange }: { onJoystickChange?: (x: number, 
     const container = containerRef.current;
     if (!container) return;
     
-    activePointerId.current = e.pointerId;
+    stateRef.current.pointerId = e.pointerId;
     container.setPointerCapture(e.pointerId);
     
     const rect = container.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
+    stateRef.current.originX = rect.left + rect.width / 2;
+    stateRef.current.originY = rect.top + rect.height / 2;
+    stateRef.current.active = true;
     
-    originRef.current = { x: centerX, y: centerY };
-    
-    // Calculate initial position
-    const dx = e.clientX - centerX;
-    const dy = e.clientY - centerY;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    
-    let normX = 0;
-    let normY = 0;
-    
-    if (distance > 0) {
-      const clampedDistance = Math.min(distance, MAX_DISTANCE);
-      normX = (dx / distance) * (clampedDistance / MAX_DISTANCE);
-      normY = (dy / distance) * (clampedDistance / MAX_DISTANCE);
-      
-      setJoystickPos({
-        x: (dx / distance) * clampedDistance,
-        y: (dy / distance) * clampedDistance,
-      });
-    }
-    
-    currentValueRef.current = { x: normX, y: normY };
+    calculateJoystick(e.clientX, e.clientY);
     setIsActive(true);
-  }, [MAX_DISTANCE]);
+  };
 
-  const handlePointerMove = useCallback((e: PointerEvent<HTMLDivElement>) => {
-    if (activePointerId.current !== e.pointerId) return;
+  const handlePointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    if (stateRef.current.pointerId !== e.pointerId) return;
     
     e.preventDefault();
     e.stopPropagation();
     
-    const origin = originRef.current;
-    const dx = e.clientX - origin.x;
-    const dy = e.clientY - origin.y;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    
-    let normX = 0;
-    let normY = 0;
-    
-    if (distance > 0) {
-      const clampedDistance = Math.min(distance, MAX_DISTANCE);
-      normX = (dx / distance) * (clampedDistance / MAX_DISTANCE);
-      normY = (dy / distance) * (clampedDistance / MAX_DISTANCE);
-      
-      setJoystickPos({
-        x: (dx / distance) * clampedDistance,
-        y: (dy / distance) * clampedDistance,
-      });
-    } else {
-      setJoystickPos({ x: 0, y: 0 });
-    }
-    
-    currentValueRef.current = { x: normX, y: normY };
-  }, [MAX_DISTANCE]);
+    calculateJoystick(e.clientX, e.clientY);
+  };
 
-  const handlePointerUp = useCallback((e: PointerEvent<HTMLDivElement>) => {
-    if (activePointerId.current !== e.pointerId) return;
+  const handlePointerUp = (e: PointerEvent<HTMLDivElement>) => {
+    if (stateRef.current.pointerId !== e.pointerId) return;
     
     e.preventDefault();
     e.stopPropagation();
     
-    activePointerId.current = null;
-    currentValueRef.current = { x: 0, y: 0 };
+    stateRef.current.pointerId = null;
+    stateRef.current.active = false;
+    stateRef.current.normX = 0;
+    stateRef.current.normY = 0;
     setIsActive(false);
     setJoystickPos({ x: 0, y: 0 });
-    onJoystickChange?.(0, 0, false);
-  }, [onJoystickChange]);
+    callbackRef.current?.(0, 0, false);
+  };
 
-  const handlePointerCancel = useCallback(() => {
-    activePointerId.current = null;
-    currentValueRef.current = { x: 0, y: 0 };
+  const handlePointerCancel = () => {
+    stateRef.current.pointerId = null;
+    stateRef.current.active = false;
+    stateRef.current.normX = 0;
+    stateRef.current.normY = 0;
     setIsActive(false);
     setJoystickPos({ x: 0, y: 0 });
-    onJoystickChange?.(0, 0, false);
-  }, [onJoystickChange]);
+    callbackRef.current?.(0, 0, false);
+  };
 
   return (
     <div
@@ -292,22 +284,22 @@ function AimZone({ onAimChange }: { onAimChange?: (screenX: number, screenY: num
 
 export default function ControlsOverlay({ onControlChange, onJoystickChange, onAimChange }: ControlsOverlayProps) {
   return (
-    <div className="pointer-events-none absolute inset-0 md:hidden">
+    <div className="pointer-events-none absolute inset-0">
       {/* Joystick area (left side) */}
       <div className="pointer-events-auto absolute left-4 bottom-28">
         <VirtualJoystick onJoystickChange={onJoystickChange} />
       </div>
 
-      {/* Aim zone (right side - covers most of the right half) */}
+      {/* Aim zone (right side - covers most of the right half) - only on mobile */}
       <div 
-        className="pointer-events-auto absolute right-0 top-0 bottom-0"
+        className="pointer-events-auto absolute right-0 top-0 bottom-0 md:hidden"
         style={{ width: '55%' }}
       >
         <AimZone onAimChange={onAimChange} />
       </div>
 
       {/* Mobile hint at bottom */}
-      <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 text-gray-500 text-xs text-center">
+      <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 text-gray-500 text-xs text-center md:hidden">
         Left: Move | Right: Aim & Shoot
       </div>
     </div>

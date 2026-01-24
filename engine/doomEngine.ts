@@ -3,6 +3,7 @@ import { AudioManager } from '@/engine/audio';
 import { createInputState, ControlKey, InputState } from '@/engine/input';
 import { EngineSnapshot } from '@/engine/types';
 import { loadWasmMath, WasmMath } from '@/engine/wasmMath';
+import { AdvancedRenderer, AdvancedParticleSystem, DEFAULT_POST_PROCESS } from '@/engine/advancedRenderer';
 
 // ============================================================================
 // ТИПЫ ДЛЯ 2D TOP-DOWN SHOOTER (ALIEN SHOOTER STYLE)
@@ -70,10 +71,13 @@ type Particle = {
   maxLife: number;
   color: string;
   size: number;
-  type: 'spark' | 'blood' | 'smoke' | 'shell' | 'gib' | 'explosion';
+  type: 'spark' | 'blood' | 'smoke' | 'shell' | 'gib' | 'explosion' | 'ember' | 'dust' | 'electric';
   rotation: number;
   rotationSpeed: number;
   gravity: number;
+  glow?: boolean;
+  pulseSpeed?: number;
+  trail?: { x: number; y: number }[];
 };
 
 type Decal = {
@@ -184,9 +188,15 @@ export class DoomEngine {
   private audio = new AudioManager();
   private wasmMath: WasmMath | null = null;
   
+  // Продвинутый рендерер
+  private advRenderer: AdvancedRenderer;
+  private advParticles: AdvancedParticleSystem;
+  
   // Текстуры
   private floorPattern: CanvasPattern | null = null;
   private wallTextures: Map<number, CanvasPattern> = new Map();
+  private floorNormalMap: HTMLCanvasElement | null = null;
+  private ambientParticles: { x: number; y: number; vx: number; vy: number; size: number; alpha: number }[] = [];
   
   // Игровое состояние
   private levelIndex = 0;
@@ -252,101 +262,268 @@ export class DoomEngine {
     this.ctx = ctx;
     this.onState = onState;
     
+    // Инициализация продвинутого рендерера
+    this.advRenderer = new AdvancedRenderer(canvas, {
+      bloom: true,
+      bloomIntensity: 0.5,
+      chromaticAberration: true,
+      chromaticIntensity: 1.5,
+      filmGrain: true,
+      grainIntensity: 0.06,
+      vignette: true,
+      vignetteIntensity: 0.6,
+      scanlines: false,
+      fog: true,
+      fogDensity: 0.12,
+      colorGrading: true,
+      contrast: 1.15,
+      saturation: 1.2,
+      ambientOcclusion: true,
+    });
+    this.advParticles = new AdvancedParticleSystem(1500);
+    
     this.canvas.addEventListener('mousemove', this.handleMouseMove);
     this.canvas.addEventListener('mousedown', this.handleMouseDown);
     this.canvas.addEventListener('mouseup', this.handleMouseUp);
     this.canvas.addEventListener('contextmenu', e => e.preventDefault());
     
     this.createTextures();
+    this.initAmbientParticles();
   }
 
   private createTextures() {
-    // Создаём текстуру пола
+    // Создаём продвинутую текстуру пола с нормал-маппингом
     const floorCanvas = document.createElement('canvas');
-    floorCanvas.width = 64;
-    floorCanvas.height = 64;
+    floorCanvas.width = 128;
+    floorCanvas.height = 128;
     const floorCtx = floorCanvas.getContext('2d')!;
     
-    // Металлический пол
-    const gradient = floorCtx.createLinearGradient(0, 0, 64, 64);
-    gradient.addColorStop(0, '#2a2a3a');
+    // Базовый металлический градиент
+    const gradient = floorCtx.createRadialGradient(64, 64, 0, 64, 64, 90);
+    gradient.addColorStop(0, '#2d2d40');
     gradient.addColorStop(0.5, '#1f1f2f');
-    gradient.addColorStop(1, '#2a2a3a');
+    gradient.addColorStop(1, '#252535');
     floorCtx.fillStyle = gradient;
-    floorCtx.fillRect(0, 0, 64, 64);
+    floorCtx.fillRect(0, 0, 128, 128);
     
-    // Добавляем детали
-    floorCtx.strokeStyle = '#3a3a4a';
+    // Сетка плиток с 3D эффектом
+    for (let ty = 0; ty < 2; ty++) {
+      for (let tx = 0; tx < 2; tx++) {
+        const px = tx * 64;
+        const py = ty * 64;
+        
+        // Тень внутри плитки (имитация углубления)
+        const tileGradient = floorCtx.createLinearGradient(px, py, px + 64, py + 64);
+        tileGradient.addColorStop(0, 'rgba(255,255,255,0.05)');
+        tileGradient.addColorStop(0.3, 'rgba(0,0,0,0)');
+        tileGradient.addColorStop(0.7, 'rgba(0,0,0,0)');
+        tileGradient.addColorStop(1, 'rgba(0,0,0,0.15)');
+        floorCtx.fillStyle = tileGradient;
+        floorCtx.fillRect(px + 2, py + 2, 60, 60);
+        
+        // Рамка плитки
+        floorCtx.strokeStyle = '#3a3a4a';
+        floorCtx.lineWidth = 2;
+        floorCtx.strokeRect(px + 2, py + 2, 60, 60);
+        
+        // Внутренняя подсветка
+        floorCtx.strokeStyle = 'rgba(100, 120, 150, 0.2)';
+        floorCtx.lineWidth = 1;
+        floorCtx.strokeRect(px + 4, py + 4, 56, 56);
+      }
+    }
+    
+    // Болты с 3D эффектом
+    const boltPositions = [[12, 12], [116, 12], [12, 116], [116, 116], [64, 64]];
+    boltPositions.forEach(([bx, by]) => {
+      // Тень болта
+      floorCtx.fillStyle = 'rgba(0,0,0,0.4)';
+      floorCtx.beginPath();
+      floorCtx.arc(bx + 1, by + 1, 5, 0, Math.PI * 2);
+      floorCtx.fill();
+      
+      // Болт с градиентом
+      const boltGradient = floorCtx.createRadialGradient(bx - 1, by - 1, 0, bx, by, 5);
+      boltGradient.addColorStop(0, '#6a6a7a');
+      boltGradient.addColorStop(0.5, '#4a4a5a');
+      boltGradient.addColorStop(1, '#3a3a4a');
+      floorCtx.fillStyle = boltGradient;
+      floorCtx.beginPath();
+      floorCtx.arc(bx, by, 4, 0, Math.PI * 2);
+      floorCtx.fill();
+      
+      // Прорезь в болте
+      floorCtx.strokeStyle = '#2a2a3a';
+      floorCtx.lineWidth = 1.5;
+      floorCtx.beginPath();
+      floorCtx.moveTo(bx - 2, by);
+      floorCtx.lineTo(bx + 2, by);
+      floorCtx.stroke();
+    });
+    
+    // Царапины и потёртости
+    floorCtx.strokeStyle = 'rgba(0,0,0,0.25)';
     floorCtx.lineWidth = 1;
-    floorCtx.strokeRect(2, 2, 60, 60);
-    
-    // Болты в углах
-    floorCtx.fillStyle = '#4a4a5a';
-    floorCtx.beginPath();
-    floorCtx.arc(8, 8, 3, 0, Math.PI * 2);
-    floorCtx.arc(56, 8, 3, 0, Math.PI * 2);
-    floorCtx.arc(8, 56, 3, 0, Math.PI * 2);
-    floorCtx.arc(56, 56, 3, 0, Math.PI * 2);
-    floorCtx.fill();
-    
-    // Царапины
-    floorCtx.strokeStyle = 'rgba(0,0,0,0.3)';
-    floorCtx.lineWidth = 1;
-    for (let i = 0; i < 5; i++) {
-      const x1 = Math.random() * 64;
-      const y1 = Math.random() * 64;
+    for (let i = 0; i < 12; i++) {
+      const x1 = Math.random() * 128;
+      const y1 = Math.random() * 128;
+      const len = 5 + Math.random() * 25;
+      const angle = Math.random() * Math.PI * 2;
       floorCtx.beginPath();
       floorCtx.moveTo(x1, y1);
-      floorCtx.lineTo(x1 + Math.random() * 20 - 10, y1 + Math.random() * 20 - 10);
+      floorCtx.lineTo(x1 + Math.cos(angle) * len, y1 + Math.sin(angle) * len);
       floorCtx.stroke();
     }
     
+    // Добавляем небольшой шум для реалистичности
+    const imageData = floorCtx.getImageData(0, 0, 128, 128);
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const noise = (Math.random() - 0.5) * 8;
+      data[i] = Math.max(0, Math.min(255, data[i] + noise));
+      data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + noise));
+      data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + noise));
+    }
+    floorCtx.putImageData(imageData, 0, 0);
+    
     this.floorPattern = this.ctx.createPattern(floorCanvas, 'repeat');
     
-    // Создаём текстуры стен
-    const wallColors = [
-      { base: '#5a4a4a', detail: '#6a5a5a', dark: '#3a2a2a' },
-      { base: '#4a5a5a', detail: '#5a6a6a', dark: '#2a3a3a' },
-      { base: '#5a5a4a', detail: '#6a6a5a', dark: '#3a3a2a' },
-      { base: '#4a4a5a', detail: '#5a5a6a', dark: '#2a2a3a' },
+    // Создаём продвинутые текстуры стен
+    const wallStyles = [
+      { base: '#5a4a4a', mid: '#6a5a5a', dark: '#3a2a2a', accent: '#7a6060', type: 'brick' },
+      { base: '#4a5a5a', mid: '#5a6a6a', dark: '#2a3a3a', accent: '#608080', type: 'metal' },
+      { base: '#5a5a4a', mid: '#6a6a5a', dark: '#3a3a2a', accent: '#808060', type: 'concrete' },
+      { base: '#4a4a5a', mid: '#5a5a6a', dark: '#2a2a3a', accent: '#606080', type: 'tech' },
     ];
     
-    wallColors.forEach((colors, index) => {
+    wallStyles.forEach((style, index) => {
       const wallCanvas = document.createElement('canvas');
-      wallCanvas.width = 32;
-      wallCanvas.height = 32;
+      wallCanvas.width = 64;
+      wallCanvas.height = 64;
       const wallCtx = wallCanvas.getContext('2d')!;
       
-      // Базовый цвет с градиентом
-      const wGradient = wallCtx.createLinearGradient(0, 0, 32, 32);
-      wGradient.addColorStop(0, colors.base);
-      wGradient.addColorStop(1, colors.dark);
+      // Базовый градиент с углом для 3D эффекта
+      const wGradient = wallCtx.createLinearGradient(0, 0, 64, 64);
+      wGradient.addColorStop(0, style.accent);
+      wGradient.addColorStop(0.3, style.base);
+      wGradient.addColorStop(0.7, style.mid);
+      wGradient.addColorStop(1, style.dark);
       wallCtx.fillStyle = wGradient;
-      wallCtx.fillRect(0, 0, 32, 32);
+      wallCtx.fillRect(0, 0, 64, 64);
       
-      // Кирпичная кладка
-      wallCtx.strokeStyle = colors.dark;
-      wallCtx.lineWidth = 2;
-      wallCtx.strokeRect(1, 1, 30, 30);
+      if (style.type === 'brick') {
+        // Кирпичная кладка
+        wallCtx.fillStyle = style.dark;
+        for (let row = 0; row < 4; row++) {
+          for (let col = 0; col < 2; col++) {
+            const offset = row % 2 === 0 ? 0 : 16;
+            const bx = col * 32 + offset;
+            const by = row * 16;
+            
+            // Тень кирпича
+            wallCtx.fillStyle = 'rgba(0,0,0,0.3)';
+            wallCtx.fillRect(bx + 1, by + 1, 30, 14);
+            
+            // Кирпич
+            const brickGrad = wallCtx.createLinearGradient(bx, by, bx, by + 14);
+            brickGrad.addColorStop(0, style.accent);
+            brickGrad.addColorStop(0.5, style.base);
+            brickGrad.addColorStop(1, style.mid);
+            wallCtx.fillStyle = brickGrad;
+            wallCtx.fillRect(bx, by, 30, 14);
+            
+            // Раствор
+            wallCtx.strokeStyle = style.dark;
+            wallCtx.lineWidth = 2;
+            wallCtx.strokeRect(bx, by, 30, 14);
+          }
+        }
+      } else if (style.type === 'metal') {
+        // Металлические панели
+        wallCtx.strokeStyle = style.dark;
+        wallCtx.lineWidth = 3;
+        wallCtx.strokeRect(2, 2, 60, 60);
+        
+        // Заклёпки
+        for (let i = 0; i < 4; i++) {
+          const rx = 8 + (i % 2) * 48;
+          const ry = 8 + Math.floor(i / 2) * 48;
+          
+          const rivetGrad = wallCtx.createRadialGradient(rx - 1, ry - 1, 0, rx, ry, 4);
+          rivetGrad.addColorStop(0, '#888');
+          rivetGrad.addColorStop(1, style.dark);
+          wallCtx.fillStyle = rivetGrad;
+          wallCtx.beginPath();
+          wallCtx.arc(rx, ry, 3, 0, Math.PI * 2);
+          wallCtx.fill();
+        }
+        
+        // Вертикальные полосы
+        wallCtx.strokeStyle = 'rgba(255,255,255,0.1)';
+        wallCtx.lineWidth = 1;
+        for (let i = 1; i < 4; i++) {
+          wallCtx.beginPath();
+          wallCtx.moveTo(i * 16, 4);
+          wallCtx.lineTo(i * 16, 60);
+          wallCtx.stroke();
+        }
+      } else if (style.type === 'tech') {
+        // Технологичная панель с подсветкой
+        wallCtx.strokeStyle = style.dark;
+        wallCtx.lineWidth = 2;
+        wallCtx.strokeRect(4, 4, 56, 56);
+        
+        // Светящиеся линии
+        wallCtx.strokeStyle = 'rgba(0, 200, 255, 0.3)';
+        wallCtx.lineWidth = 2;
+        wallCtx.beginPath();
+        wallCtx.moveTo(8, 32);
+        wallCtx.lineTo(24, 32);
+        wallCtx.moveTo(40, 32);
+        wallCtx.lineTo(56, 32);
+        wallCtx.stroke();
+        
+        // Центральный индикатор
+        const indicatorGrad = wallCtx.createRadialGradient(32, 32, 0, 32, 32, 8);
+        indicatorGrad.addColorStop(0, 'rgba(0, 200, 255, 0.5)');
+        indicatorGrad.addColorStop(1, 'rgba(0, 100, 200, 0.1)');
+        wallCtx.fillStyle = indicatorGrad;
+        wallCtx.beginPath();
+        wallCtx.arc(32, 32, 6, 0, Math.PI * 2);
+        wallCtx.fill();
+      } else {
+        // Бетон с трещинами
+        // Добавляем шум
+        const concreteData = wallCtx.getImageData(0, 0, 64, 64);
+        const cd = concreteData.data;
+        for (let i = 0; i < cd.length; i += 4) {
+          const noise = (Math.random() - 0.5) * 15;
+          cd[i] = Math.max(0, Math.min(255, cd[i] + noise));
+          cd[i + 1] = Math.max(0, Math.min(255, cd[i + 1] + noise));
+          cd[i + 2] = Math.max(0, Math.min(255, cd[i + 2] + noise));
+        }
+        wallCtx.putImageData(concreteData, 0, 0);
+        
+        // Трещины
+        wallCtx.strokeStyle = 'rgba(0,0,0,0.4)';
+        wallCtx.lineWidth = 1;
+        wallCtx.beginPath();
+        wallCtx.moveTo(10, 0);
+        wallCtx.lineTo(15, 20);
+        wallCtx.lineTo(8, 40);
+        wallCtx.lineTo(20, 64);
+        wallCtx.stroke();
+      }
       
-      wallCtx.strokeStyle = 'rgba(0,0,0,0.4)';
-      wallCtx.lineWidth = 1;
-      wallCtx.beginPath();
-      wallCtx.moveTo(0, 16);
-      wallCtx.lineTo(32, 16);
-      wallCtx.moveTo(16, 0);
-      wallCtx.lineTo(16, 16);
-      wallCtx.moveTo(0, 16);
-      wallCtx.lineTo(0, 32);
-      wallCtx.stroke();
+      // Общая подсветка сверху-слева
+      wallCtx.fillStyle = 'rgba(255,255,255,0.08)';
+      wallCtx.fillRect(0, 0, 64, 3);
+      wallCtx.fillRect(0, 0, 3, 64);
       
-      // Подсветка
-      wallCtx.strokeStyle = colors.detail;
-      wallCtx.beginPath();
-      wallCtx.moveTo(1, 31);
-      wallCtx.lineTo(1, 1);
-      wallCtx.lineTo(31, 1);
-      wallCtx.stroke();
+      // Общая тень снизу-справа
+      wallCtx.fillStyle = 'rgba(0,0,0,0.15)';
+      wallCtx.fillRect(0, 61, 64, 3);
+      wallCtx.fillRect(61, 0, 3, 64);
       
       this.wallTextures.set(index + 1, this.ctx.createPattern(wallCanvas, 'repeat')!);
     });
@@ -470,6 +647,21 @@ export class DoomEngine {
     this.canvas.width = Math.max(1, Math.floor(rect.width * dpr));
     this.canvas.height = Math.max(1, Math.floor(rect.height * dpr));
     this.ctx.scale(dpr, dpr);
+    this.advRenderer.resize();
+  }
+
+  private initAmbientParticles() {
+    // Пылинки в воздухе для атмосферы
+    for (let i = 0; i < 50; i++) {
+      this.ambientParticles.push({
+        x: Math.random() * 2000,
+        y: Math.random() * 2000,
+        vx: (Math.random() - 0.5) * 10,
+        vy: (Math.random() - 0.5) * 10,
+        size: 1 + Math.random() * 2,
+        alpha: 0.1 + Math.random() * 0.2,
+      });
+    }
   }
 
   private loadLevel(index: number) {
@@ -1177,59 +1369,172 @@ export class DoomEngine {
   }
 
   // ============================================================================
-  // РЕНДЕРИНГ
+  // РЕНДЕРИНГ С ПРОДВИНУТОЙ ГРАФИКОЙ
   // ============================================================================
 
   private render() {
     if (!this.level) return;
     
-    const ctx = this.ctx;
     const rect = this.canvas.getBoundingClientRect();
     const w = rect.width;
     const h = rect.height;
+    const dt = 1 / 60; // Approximate dt for effects
     
-    // Очистка
-    ctx.fillStyle = '#0a0a12';
-    ctx.fillRect(0, 0, w, h);
+    // Начало кадра - очистка буферов
+    this.advRenderer.beginFrame(dt);
+    
+    const ctx = this.advRenderer.getSceneContext();
     
     ctx.save();
     
-    // Screen shake
+    // Screen shake с улучшенным эффектом
     if (this.screenShake > 0) {
       const shakeX = (Math.random() - 0.5) * this.screenShake * 2;
       const shakeY = (Math.random() - 0.5) * this.screenShake * 2;
+      const shakeRot = (Math.random() - 0.5) * this.screenShake * 0.002;
+      ctx.translate(w / 2, h / 2);
+      ctx.rotate(shakeRot);
+      ctx.translate(-w / 2, -h / 2);
       ctx.translate(shakeX, shakeY);
     }
     
     ctx.translate(-this.cameraX, -this.cameraY);
     
-    this.renderFloor(ctx);
+    // Рендеринг сцены
+    this.renderFloorAdvanced(ctx);
+    this.renderAmbientParticles(ctx);
     this.renderDecals(ctx);
-    this.renderWalls(ctx);
-    this.renderPickups(ctx);
-    this.renderEnemies(ctx);
-    this.renderBullets(ctx);
-    this.renderPlayer(ctx);
-    this.renderParticles(ctx);
-    this.renderLights(ctx);
+    this.renderWallsAdvanced(ctx);
+    this.renderPickupsAdvanced(ctx);
+    this.renderEnemiesAdvanced(ctx);
+    this.renderBulletsAdvanced(ctx);
+    this.renderPlayerAdvanced(ctx);
+    this.renderParticlesAdvanced(ctx);
+    
+    // Рендеринг освещения
+    this.renderDynamicLighting();
     
     ctx.restore();
     
-    // Post-processing
+    // Финализация кадра с post-processing
+    this.advRenderer.endFrame();
+    
+    // Hit flash overlay
     if (this.hitFlash > 0) {
-      ctx.fillStyle = `rgba(255, 0, 0, ${this.hitFlash * 0.4})`;
-      ctx.fillRect(0, 0, w, h);
+      this.ctx.fillStyle = `rgba(255, 0, 0, ${this.hitFlash * 0.35})`;
+      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     }
     
-    // Виньетка
-    this.renderVignette(ctx, w, h);
+    // UI поверх всего
+    this.renderMinimapAdvanced(this.ctx, w, h);
+    this.renderHUDAdvanced(this.ctx, w, h);
+  }
+
+  private renderDynamicLighting() {
+    if (!this.level) return;
     
-    // UI
-    this.renderMinimap(ctx, w, h);
-    this.renderHUD(ctx, w, h);
+    // Ambient light
+    this.advRenderer.addLight(
+      this.player.x, 
+      this.player.y, 
+      250, 
+      'rgba(255, 250, 240, 0.15)', 
+      0.8
+    );
+    
+    // Player flashlight cone
+    const flashlightDist = 300;
+    const flashlightX = this.player.x + Math.cos(this.player.angle) * flashlightDist * 0.5;
+    const flashlightY = this.player.y + Math.sin(this.player.angle) * flashlightDist * 0.5;
+    this.advRenderer.addLight(flashlightX, flashlightY, 200, 'rgba(255, 250, 230, 0.3)', 0.6);
+    
+    // God rays from flashlight
+    this.advRenderer.addGodRays(
+      this.player.x + Math.cos(this.player.angle) * 20,
+      this.player.y + Math.sin(this.player.angle) * 20,
+      this.player.angle,
+      250,
+      150,
+      'rgba(255, 250, 230, 0.1)',
+      0.15
+    );
+    
+    // Dynamic lights from effects
+    for (const light of this.lights) {
+      this.advRenderer.addLight(light.x, light.y, light.radius, light.color, light.intensity);
+    }
+    
+    // Enemy glow lights
+    for (const enemy of this.enemies) {
+      if (!enemy.alive) continue;
+      
+      let glowColor = 'rgba(255, 50, 50, 0.15)';
+      let glowRadius = 40;
+      
+      if (enemy.type === 'spitter') {
+        glowColor = 'rgba(50, 255, 100, 0.2)';
+        glowRadius = 50;
+      } else if (enemy.type === 'tank') {
+        glowColor = 'rgba(100, 100, 200, 0.15)';
+        glowRadius = 60;
+      } else if (enemy.type === 'shooter') {
+        glowColor = 'rgba(255, 100, 50, 0.15)';
+      }
+      
+      this.advRenderer.addPulsingLight(enemy.x, enemy.y, glowRadius, glowColor, 0.5, 4);
+    }
+    
+    // Pickup glow lights
+    for (const pickup of this.pickups) {
+      let color = 'rgba(0, 255, 100, 0.3)';
+      if (pickup.type === 'ammo') color = 'rgba(255, 200, 50, 0.3)';
+      else if (pickup.type === 'armor') color = 'rgba(50, 200, 255, 0.3)';
+      
+      this.advRenderer.addPulsingLight(pickup.x, pickup.y, 50, color, 0.4, 3);
+    }
+    
+    // Exit lights
+    for (const exitKey of this.level.exitTiles) {
+      const [ex, ey] = exitKey.split(',').map(Number);
+      const px = ex * TILE_SIZE + TILE_SIZE / 2;
+      const py = ey * TILE_SIZE + TILE_SIZE / 2;
+      this.advRenderer.addPulsingLight(px, py, 80, 'rgba(0, 255, 150, 0.4)', 0.6, 2);
+    }
+  }
+
+  private renderAmbientParticles(ctx: CanvasRenderingContext2D) {
+    // Update and render ambient dust particles
+    const rect = this.canvas.getBoundingClientRect();
+    
+    for (const p of this.ambientParticles) {
+      // Move particles
+      p.x += p.vx * 0.016;
+      p.y += p.vy * 0.016;
+      
+      // Wrap around camera view
+      if (p.x < this.cameraX - 50) p.x = this.cameraX + rect.width + 50;
+      if (p.x > this.cameraX + rect.width + 50) p.x = this.cameraX - 50;
+      if (p.y < this.cameraY - 50) p.y = this.cameraY + rect.height + 50;
+      if (p.y > this.cameraY + rect.height + 50) p.y = this.cameraY - 50;
+      
+      // Render with soft glow
+      ctx.save();
+      ctx.globalAlpha = p.alpha * (0.5 + Math.sin(this.gameTime * 2 + p.x) * 0.5);
+      ctx.fillStyle = '#aabbcc';
+      ctx.shadowColor = '#aabbcc';
+      ctx.shadowBlur = 3;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
   }
 
   private renderFloor(ctx: CanvasRenderingContext2D) {
+    this.renderFloorAdvanced(ctx);
+  }
+
+  private renderFloorAdvanced(ctx: CanvasRenderingContext2D) {
     if (!this.level || !this.floorPattern) return;
     
     const startTileX = Math.max(0, Math.floor(this.cameraX / TILE_SIZE));
@@ -1247,27 +1552,100 @@ export class DoomEngine {
           const px = x * TILE_SIZE;
           const py = y * TILE_SIZE;
           ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+          
+          // Добавляем ambient occlusion у стен
+          const hasWallAbove = (this.level.tiles[y - 1]?.[x] ?? 1) > 0;
+          const hasWallBelow = (this.level.tiles[y + 1]?.[x] ?? 1) > 0;
+          const hasWallLeft = (this.level.tiles[y]?.[x - 1] ?? 1) > 0;
+          const hasWallRight = (this.level.tiles[y]?.[x + 1] ?? 1) > 0;
+          
+          if (hasWallAbove || hasWallBelow || hasWallLeft || hasWallRight) {
+            const aoGradient = ctx.createRadialGradient(
+              px + TILE_SIZE / 2, py + TILE_SIZE / 2, 0,
+              px + TILE_SIZE / 2, py + TILE_SIZE / 2, TILE_SIZE
+            );
+            aoGradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+            aoGradient.addColorStop(0.7, 'rgba(0, 0, 0, 0.15)');
+            aoGradient.addColorStop(1, 'rgba(0, 0, 0, 0.3)');
+            ctx.fillStyle = aoGradient;
+            ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+            ctx.fillStyle = this.floorPattern!;
+          }
         }
         
-        // Выход
+        // Выход с улучшенным эффектом
         if (this.level.exitTiles.has(`${x},${y}`)) {
           const px = x * TILE_SIZE;
           const py = y * TILE_SIZE;
-          const pulse = Math.sin(this.gameTime * 3) * 0.15 + 0.35;
-          ctx.fillStyle = `rgba(0, 255, 100, ${pulse})`;
-          ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
           
-          // Стрелки
-          ctx.fillStyle = '#00ff66';
-          ctx.font = 'bold 16px Arial';
+          // Пульсирующее свечение
+          const pulse = Math.sin(this.gameTime * 3) * 0.15 + 0.4;
+          const pulse2 = Math.sin(this.gameTime * 5 + 1) * 0.1 + 0.3;
+          
+          // Внешнее свечение
+          const glowGradient = ctx.createRadialGradient(
+            px + TILE_SIZE / 2, py + TILE_SIZE / 2, 0,
+            px + TILE_SIZE / 2, py + TILE_SIZE / 2, TILE_SIZE
+          );
+          glowGradient.addColorStop(0, `rgba(0, 255, 150, ${pulse})`);
+          glowGradient.addColorStop(0.5, `rgba(0, 200, 100, ${pulse2})`);
+          glowGradient.addColorStop(1, 'rgba(0, 100, 50, 0.1)');
+          ctx.fillStyle = glowGradient;
+          ctx.fillRect(px - 5, py - 5, TILE_SIZE + 10, TILE_SIZE + 10);
+          
+          // Сканирующая линия
+          const scanY = ((this.gameTime * 30) % TILE_SIZE);
+          ctx.fillStyle = 'rgba(100, 255, 200, 0.4)';
+          ctx.fillRect(px, py + scanY, TILE_SIZE, 3);
+          
+          // Текст EXIT с свечением
+          ctx.save();
+          ctx.shadowColor = '#00ff88';
+          ctx.shadowBlur = 15;
+          ctx.fillStyle = '#00ff88';
+          ctx.font = 'bold 14px monospace';
           ctx.textAlign = 'center';
           ctx.fillText('EXIT', px + TILE_SIZE / 2, py + TILE_SIZE / 2 + 5);
+          ctx.restore();
+          
+          // Угловые маркеры
+          ctx.strokeStyle = `rgba(0, 255, 150, ${pulse})`;
+          ctx.lineWidth = 2;
+          const cornerSize = 8;
+          // Верхний левый
+          ctx.beginPath();
+          ctx.moveTo(px + cornerSize, py);
+          ctx.lineTo(px, py);
+          ctx.lineTo(px, py + cornerSize);
+          ctx.stroke();
+          // Верхний правый
+          ctx.beginPath();
+          ctx.moveTo(px + TILE_SIZE - cornerSize, py);
+          ctx.lineTo(px + TILE_SIZE, py);
+          ctx.lineTo(px + TILE_SIZE, py + cornerSize);
+          ctx.stroke();
+          // Нижний левый
+          ctx.beginPath();
+          ctx.moveTo(px, py + TILE_SIZE - cornerSize);
+          ctx.lineTo(px, py + TILE_SIZE);
+          ctx.lineTo(px + cornerSize, py + TILE_SIZE);
+          ctx.stroke();
+          // Нижний правый
+          ctx.beginPath();
+          ctx.moveTo(px + TILE_SIZE, py + TILE_SIZE - cornerSize);
+          ctx.lineTo(px + TILE_SIZE, py + TILE_SIZE);
+          ctx.lineTo(px + TILE_SIZE - cornerSize, py + TILE_SIZE);
+          ctx.stroke();
         }
       }
     }
   }
 
   private renderWalls(ctx: CanvasRenderingContext2D) {
+    this.renderWallsAdvanced(ctx);
+  }
+
+  private renderWallsAdvanced(ctx: CanvasRenderingContext2D) {
     if (!this.level) return;
     
     const startTileX = Math.max(0, Math.floor(this.cameraX / TILE_SIZE));
@@ -1290,15 +1668,82 @@ export class DoomEngine {
             ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
           }
           
-          // 3D эффект - тень снизу и справа
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-          ctx.fillRect(px, py + TILE_SIZE - 4, TILE_SIZE, 4);
-          ctx.fillRect(px + TILE_SIZE - 4, py, 4, TILE_SIZE);
+          // Проверяем соседей для определения типа угла/края
+          const hasFloorAbove = (this.level.tiles[y - 1]?.[x] ?? 1) === 0;
+          const hasFloorBelow = (this.level.tiles[y + 1]?.[x] ?? 1) === 0;
+          const hasFloorLeft = (this.level.tiles[y]?.[x - 1] ?? 1) === 0;
+          const hasFloorRight = (this.level.tiles[y]?.[x + 1] ?? 1) === 0;
           
-          // Подсветка сверху и слева
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-          ctx.fillRect(px, py, TILE_SIZE, 2);
-          ctx.fillRect(px, py, 2, TILE_SIZE);
+          // Улучшенный 3D эффект с градиентными тенями
+          if (hasFloorBelow) {
+            // Тень на полу снизу стены
+            const shadowGradient = ctx.createLinearGradient(px, py + TILE_SIZE, px, py + TILE_SIZE + 20);
+            shadowGradient.addColorStop(0, 'rgba(0, 0, 0, 0.6)');
+            shadowGradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            ctx.fillStyle = shadowGradient;
+            ctx.fillRect(px, py + TILE_SIZE, TILE_SIZE, 20);
+          }
+          
+          if (hasFloorRight) {
+            // Тень на полу справа от стены
+            const shadowGradient = ctx.createLinearGradient(px + TILE_SIZE, py, px + TILE_SIZE + 15, py);
+            shadowGradient.addColorStop(0, 'rgba(0, 0, 0, 0.5)');
+            shadowGradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            ctx.fillStyle = shadowGradient;
+            ctx.fillRect(px + TILE_SIZE, py, 15, TILE_SIZE);
+          }
+          
+          // Внутренняя тень на стене (снизу и справа)
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+          ctx.fillRect(px, py + TILE_SIZE - 5, TILE_SIZE, 5);
+          ctx.fillRect(px + TILE_SIZE - 5, py, 5, TILE_SIZE);
+          
+          // Подсветка сверху и слева (свет сверху-слева)
+          const highlightGradient = ctx.createLinearGradient(px, py, px + TILE_SIZE * 0.3, py + TILE_SIZE * 0.3);
+          highlightGradient.addColorStop(0, 'rgba(255, 255, 255, 0.15)');
+          highlightGradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+          ctx.fillStyle = highlightGradient;
+          ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+          
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+          ctx.fillRect(px, py, TILE_SIZE, 3);
+          ctx.fillRect(px, py, 3, TILE_SIZE);
+          
+          // Добавляем эффект окклюзии по краям
+          if (hasFloorAbove) {
+            const edgeGradient = ctx.createLinearGradient(px, py, px, py + 10);
+            edgeGradient.addColorStop(0, 'rgba(200, 200, 220, 0.15)');
+            edgeGradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            ctx.fillStyle = edgeGradient;
+            ctx.fillRect(px, py, TILE_SIZE, 10);
+          }
+          
+          // Случайные детали на некоторых стенах (трубы, вентиляция)
+          if ((x + y) % 7 === 0 && tile === 2) {
+            // Вентиляционная решётка
+            ctx.fillStyle = '#1a1a2a';
+            ctx.fillRect(px + 8, py + 8, 16, 16);
+            ctx.strokeStyle = '#3a3a4a';
+            ctx.lineWidth = 1;
+            for (let i = 0; i < 4; i++) {
+              ctx.beginPath();
+              ctx.moveTo(px + 8, py + 10 + i * 4);
+              ctx.lineTo(px + 24, py + 10 + i * 4);
+              ctx.stroke();
+            }
+          }
+          
+          if ((x + y) % 11 === 0 && tile === 4) {
+            // Светящийся индикатор на tech-стенах
+            const indicatorPulse = Math.sin(this.gameTime * 4 + x * y) * 0.3 + 0.7;
+            ctx.fillStyle = `rgba(0, 200, 255, ${indicatorPulse * 0.5})`;
+            ctx.beginPath();
+            ctx.arc(px + TILE_SIZE / 2, py + TILE_SIZE / 2, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = `rgba(0, 150, 255, ${indicatorPulse})`;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+          }
         }
       }
     }
@@ -1350,60 +1795,155 @@ export class DoomEngine {
   }
 
   private renderPickups(ctx: CanvasRenderingContext2D) {
+    this.renderPickupsAdvanced(ctx);
+  }
+
+  private renderPickupsAdvanced(ctx: CanvasRenderingContext2D) {
     for (const pickup of this.pickups) {
-      const bob = Math.sin(this.gameTime * 4 + pickup.bobOffset) * 3;
+      const bob = Math.sin(this.gameTime * 4 + pickup.bobOffset) * 4;
+      const wobble = Math.sin(this.gameTime * 2 + pickup.bobOffset) * 0.05;
       const y = pickup.y + bob;
       
       ctx.save();
       ctx.translate(pickup.x, y);
+      ctx.rotate(wobble);
       
-      // Свечение
-      const glowColor = pickup.type === 'health' ? 'rgba(0, 255, 0, 0.3)' 
-                      : pickup.type === 'ammo' ? 'rgba(255, 170, 0, 0.3)' 
-                      : 'rgba(0, 170, 255, 0.3)';
-      const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, 25);
-      gradient.addColorStop(0, glowColor);
-      gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
-      ctx.fillStyle = gradient;
+      // Многослойное свечение
+      const glowColors = pickup.type === 'health' 
+        ? ['rgba(0, 255, 100, 0.4)', 'rgba(0, 200, 50, 0.2)', 'rgba(100, 255, 150, 0.1)']
+        : pickup.type === 'ammo' 
+        ? ['rgba(255, 200, 50, 0.4)', 'rgba(255, 150, 0, 0.2)', 'rgba(255, 220, 100, 0.1)']
+        : ['rgba(50, 200, 255, 0.4)', 'rgba(0, 150, 255, 0.2)', 'rgba(100, 200, 255, 0.1)'];
+      
+      // Внешнее мерцающее свечение
+      const glowPulse = Math.sin(this.gameTime * 5 + pickup.bobOffset) * 0.3 + 0.7;
+      for (let i = 0; i < 3; i++) {
+        const radius = 30 + i * 10;
+        const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
+        gradient.addColorStop(0, glowColors[i]);
+        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.globalAlpha = glowPulse;
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(0, 0, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      
+      // Вращающиеся частицы вокруг пикапа
+      const particleCount = 4;
+      for (let i = 0; i < particleCount; i++) {
+        const angle = (i / particleCount) * Math.PI * 2 + this.gameTime * 3;
+        const dist = 18 + Math.sin(this.gameTime * 6 + i) * 3;
+        const px = Math.cos(angle) * dist;
+        const py = Math.sin(angle) * dist;
+        const psize = 2 + Math.sin(this.gameTime * 8 + i) * 1;
+        
+        ctx.fillStyle = glowColors[0];
+        ctx.beginPath();
+        ctx.arc(px, py, psize, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      
+      // Тень под пикапом
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
       ctx.beginPath();
-      ctx.arc(0, 0, 25, 0, Math.PI * 2);
+      ctx.ellipse(0, 15 - bob * 0.5, 12, 4, 0, 0, Math.PI * 2);
       ctx.fill();
       
-      // Иконка
+      // Иконка с улучшенным рендерингом
+      ctx.shadowColor = glowColors[0];
+      ctx.shadowBlur = 10;
+      
       if (pickup.type === 'health') {
-        // Аптечка
+        // Аптечка с градиентом
+        const boxGrad = ctx.createLinearGradient(-10, -10, 10, 10);
+        boxGrad.addColorStop(0, '#ffffff');
+        boxGrad.addColorStop(1, '#cccccc');
+        ctx.fillStyle = boxGrad;
+        ctx.fillRect(-11, -11, 22, 22);
+        
+        const crossGrad = ctx.createLinearGradient(-8, -8, 8, 8);
+        crossGrad.addColorStop(0, '#00dd00');
+        crossGrad.addColorStop(1, '#008800');
+        ctx.fillStyle = crossGrad;
+        ctx.fillRect(-9, -9, 18, 18);
+        
         ctx.fillStyle = '#ffffff';
-        ctx.fillRect(-10, -10, 20, 20);
-        ctx.fillStyle = '#00aa00';
-        ctx.fillRect(-8, -8, 16, 16);
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(-6, -2, 12, 4);
-        ctx.fillRect(-2, -6, 4, 12);
+        ctx.shadowColor = '#00ff00';
+        ctx.shadowBlur = 5;
+        ctx.fillRect(-7, -2, 14, 4);
+        ctx.fillRect(-2, -7, 4, 14);
+        
       } else if (pickup.type === 'ammo') {
+        // Патроны с деталями
+        const boxGrad = ctx.createLinearGradient(-8, -10, 8, 10);
+        boxGrad.addColorStop(0, '#a08060');
+        boxGrad.addColorStop(1, '#604020');
+        ctx.fillStyle = boxGrad;
+        ctx.fillRect(-9, -11, 18, 22);
+        
+        // Надпись AMMO
+        ctx.fillStyle = '#ffcc00';
+        ctx.font = 'bold 6px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('AMMO', 0, -4);
+        
         // Патроны
-        ctx.fillStyle = '#8b7355';
-        ctx.fillRect(-8, -10, 16, 20);
-        ctx.fillStyle = '#d4a574';
         for (let i = 0; i < 3; i++) {
+          const bulletGrad = ctx.createLinearGradient(-4 + i * 4, -2, -4 + i * 4, 6);
+          bulletGrad.addColorStop(0, '#ffdd88');
+          bulletGrad.addColorStop(0.3, '#ddaa66');
+          bulletGrad.addColorStop(1, '#996633');
+          ctx.fillStyle = bulletGrad;
           ctx.beginPath();
-          ctx.arc(-4 + i * 4, 0, 3, 0, Math.PI * 2);
+          ctx.arc(-4 + i * 4, 3, 3, 0, Math.PI * 2);
+          ctx.fill();
+          // Наконечник
+          ctx.fillStyle = '#cc8844';
+          ctx.beginPath();
+          ctx.arc(-4 + i * 4, 0, 2, Math.PI, 0);
           ctx.fill();
         }
+        
       } else {
-        // Броня
-        ctx.fillStyle = '#0088ff';
+        // Броня с металлическим эффектом
+        const armorGrad = ctx.createLinearGradient(-10, -12, 10, 14);
+        armorGrad.addColorStop(0, '#00ccff');
+        armorGrad.addColorStop(0.3, '#0088ff');
+        armorGrad.addColorStop(0.7, '#0066cc');
+        armorGrad.addColorStop(1, '#004488');
+        ctx.fillStyle = armorGrad;
         ctx.beginPath();
-        ctx.moveTo(0, -12);
-        ctx.lineTo(10, -4);
-        ctx.lineTo(10, 8);
-        ctx.lineTo(0, 14);
-        ctx.lineTo(-10, 8);
-        ctx.lineTo(-10, -4);
+        ctx.moveTo(0, -13);
+        ctx.lineTo(11, -5);
+        ctx.lineTo(11, 9);
+        ctx.lineTo(0, 15);
+        ctx.lineTo(-11, 9);
+        ctx.lineTo(-11, -5);
         ctx.closePath();
         ctx.fill();
-        ctx.strokeStyle = '#00ccff';
+        
+        // Блик
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+        ctx.beginPath();
+        ctx.moveTo(0, -11);
+        ctx.lineTo(8, -4);
+        ctx.lineTo(0, 2);
+        ctx.lineTo(-6, -4);
+        ctx.closePath();
+        ctx.fill();
+        
+        ctx.strokeStyle = '#00eeff';
         ctx.lineWidth = 2;
         ctx.stroke();
+        
+        // Индикатор в центре
+        const indicatorPulse = Math.sin(this.gameTime * 6) * 0.5 + 0.5;
+        ctx.fillStyle = `rgba(255, 255, 255, ${indicatorPulse})`;
+        ctx.beginPath();
+        ctx.arc(0, 0, 3, 0, Math.PI * 2);
+        ctx.fill();
       }
       
       ctx.restore();
@@ -1411,184 +1951,448 @@ export class DoomEngine {
   }
 
   private renderEnemies(ctx: CanvasRenderingContext2D) {
+    this.renderEnemiesAdvanced(ctx);
+  }
+
+  private renderEnemiesAdvanced(ctx: CanvasRenderingContext2D) {
     for (const enemy of this.enemies) {
       if (!enemy.alive) continue;
       
       const angleToPlayer = Math.atan2(this.player.y - enemy.y, this.player.x - enemy.x);
       const wobble = Math.sin(enemy.animFrame) * 2;
+      const breathe = Math.sin(enemy.animFrame * 0.5) * 0.05 + 1;
       
       ctx.save();
       ctx.translate(enemy.x, enemy.y);
       
-      // Тень
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+      // Улучшенная тень с размытием
+      const shadowScale = 1 + Math.sin(enemy.animFrame * 0.3) * 0.1;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
       ctx.beginPath();
-      ctx.ellipse(0, enemy.size * 0.7, enemy.size * 0.9, enemy.size * 0.4, 0, 0, Math.PI * 2);
+      ctx.ellipse(3, enemy.size * 0.8, enemy.size * shadowScale, enemy.size * 0.35, 0.2, 0, Math.PI * 2);
       ctx.fill();
       
-      // Свечение при ударе
-      if (enemy.hitFlash > 0) {
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+      // Aura/glow effect based on enemy type
+      if (enemy.hitFlash <= 0) {
+        const auraGradient = ctx.createRadialGradient(0, 0, enemy.size * 0.5, 0, 0, enemy.size * 1.5);
+        auraGradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+        auraGradient.addColorStop(0.7, enemy.glowColor.replace(')', ', 0.2)').replace('rgb', 'rgba'));
+        auraGradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = auraGradient;
         ctx.beginPath();
-        ctx.arc(0, 0, enemy.size + 4, 0, Math.PI * 2);
+        ctx.arc(0, 0, enemy.size * 1.5, 0, Math.PI * 2);
         ctx.fill();
+      }
+      
+      // Свечение при ударе - улучшенное
+      if (enemy.hitFlash > 0) {
+        ctx.shadowColor = '#ffffff';
+        ctx.shadowBlur = 20;
+        ctx.fillStyle = `rgba(255, 255, 255, ${enemy.hitFlash * 4})`;
+        ctx.beginPath();
+        ctx.arc(0, 0, enemy.size + 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
       }
       
       // Тело врага
       ctx.rotate(angleToPlayer);
+      ctx.scale(breathe, breathe);
       
       // Разные формы для разных типов
       if (enemy.type === 'zombie') {
-        // Зомби - гуманоид
-        ctx.fillStyle = enemy.hitFlash > 0 ? '#ffffff' : enemy.color;
+        // Зомби - гуманоид с детализацией
+        const bodyGrad = ctx.createRadialGradient(-enemy.size * 0.2, 0, 0, 0, 0, enemy.size);
+        bodyGrad.addColorStop(0, enemy.hitFlash > 0 ? '#ffffff' : '#4a6a4a');
+        bodyGrad.addColorStop(0.7, enemy.hitFlash > 0 ? '#ffffff' : enemy.color);
+        bodyGrad.addColorStop(1, enemy.hitFlash > 0 ? '#dddddd' : '#1a3a1a');
+        ctx.fillStyle = bodyGrad;
         ctx.beginPath();
         ctx.ellipse(0, 0, enemy.size * 0.7, enemy.size, 0, 0, Math.PI * 2);
         ctx.fill();
         
-        // Руки
-        ctx.fillStyle = enemy.hitFlash > 0 ? '#ffffff' : '#2a4a2a';
-        ctx.fillRect(enemy.size * 0.5, -4 + wobble, 10, 6);
-        ctx.fillRect(enemy.size * 0.5, 2 + wobble, 10, 6);
+        // Детали тела - шрамы
+        ctx.strokeStyle = '#2a3a2a';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-enemy.size * 0.3, -enemy.size * 0.5);
+        ctx.lineTo(-enemy.size * 0.1, -enemy.size * 0.2);
+        ctx.stroke();
         
-        // Глаза
+        // Руки с анимацией
+        const armGrad = ctx.createLinearGradient(enemy.size * 0.5, 0, enemy.size * 0.5 + 10, 0);
+        armGrad.addColorStop(0, enemy.hitFlash > 0 ? '#ffffff' : '#3a5a3a');
+        armGrad.addColorStop(1, enemy.hitFlash > 0 ? '#dddddd' : '#2a4a2a');
+        ctx.fillStyle = armGrad;
+        ctx.fillRect(enemy.size * 0.5, -5 + wobble, 12, 7);
+        ctx.fillRect(enemy.size * 0.5, 1 + wobble * 0.8, 12, 7);
+        
+        // Когти
+        ctx.fillStyle = '#1a1a1a';
+        for (let i = 0; i < 2; i++) {
+          const armY = i === 0 ? -5 + wobble : 1 + wobble * 0.8;
+          for (let j = 0; j < 3; j++) {
+            ctx.beginPath();
+            ctx.moveTo(enemy.size * 0.5 + 12, armY + j * 2 + 1);
+            ctx.lineTo(enemy.size * 0.5 + 16, armY + j * 2);
+            ctx.lineTo(enemy.size * 0.5 + 12, armY + j * 2 + 2);
+            ctx.fill();
+          }
+        }
+        
+        // Глаза со свечением
+        ctx.shadowColor = '#ff0000';
+        ctx.shadowBlur = 8;
         ctx.fillStyle = '#ff0000';
         ctx.beginPath();
-        ctx.arc(enemy.size * 0.3, -3, 3, 0, Math.PI * 2);
-        ctx.arc(enemy.size * 0.3, 3, 3, 0, Math.PI * 2);
+        ctx.arc(enemy.size * 0.35, -4, 3, 0, Math.PI * 2);
+        ctx.arc(enemy.size * 0.35, 4, 3, 0, Math.PI * 2);
         ctx.fill();
+        // Зрачки
+        ctx.fillStyle = '#880000';
+        ctx.beginPath();
+        ctx.arc(enemy.size * 0.38, -4, 1.5, 0, Math.PI * 2);
+        ctx.arc(enemy.size * 0.38, 4, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
         
       } else if (enemy.type === 'runner') {
-        // Раннер - насекомое
-        ctx.fillStyle = enemy.hitFlash > 0 ? '#ffffff' : enemy.color;
+        // Раннер - насекомое с улучшенной детализацией
+        const bodyGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, enemy.size);
+        bodyGrad.addColorStop(0, enemy.hitFlash > 0 ? '#ffffff' : '#a07040');
+        bodyGrad.addColorStop(1, enemy.hitFlash > 0 ? '#dddddd' : enemy.color);
+        ctx.fillStyle = bodyGrad;
         ctx.beginPath();
         ctx.ellipse(0, 0, enemy.size * 1.2, enemy.size * 0.6, 0, 0, Math.PI * 2);
         ctx.fill();
         
-        // Ноги
+        // Сегменты тела
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 3; i++) {
+          ctx.beginPath();
+          ctx.ellipse(-enemy.size * 0.4 + i * enemy.size * 0.4, 0, 2, enemy.size * 0.5, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        
+        // Ноги с суставами
         ctx.strokeStyle = enemy.hitFlash > 0 ? '#ffffff' : '#5a3a1a';
         ctx.lineWidth = 2;
         for (let i = 0; i < 3; i++) {
           const legX = -enemy.size * 0.5 + i * enemy.size * 0.5;
-          const legWobble = Math.sin(enemy.animFrame + i) * 4;
+          const legWobble = Math.sin(enemy.animFrame * 2 + i * 2) * 6;
+          
+          // Верхняя нога
           ctx.beginPath();
-          ctx.moveTo(legX, -enemy.size * 0.5);
-          ctx.lineTo(legX, -enemy.size - 5 + legWobble);
-          ctx.moveTo(legX, enemy.size * 0.5);
-          ctx.lineTo(legX, enemy.size + 5 - legWobble);
+          ctx.moveTo(legX, -enemy.size * 0.4);
+          ctx.lineTo(legX - 3, -enemy.size - 2 + legWobble);
+          ctx.lineTo(legX, -enemy.size - 8 + legWobble);
+          ctx.stroke();
+          
+          // Нижняя нога
+          ctx.beginPath();
+          ctx.moveTo(legX, enemy.size * 0.4);
+          ctx.lineTo(legX - 3, enemy.size + 2 - legWobble);
+          ctx.lineTo(legX, enemy.size + 8 - legWobble);
           ctx.stroke();
         }
         
+        // Глаза (множественные как у насекомого)
+        ctx.fillStyle = '#ffff00';
+        ctx.shadowColor = '#ffff00';
+        ctx.shadowBlur = 5;
+        for (let i = 0; i < 4; i++) {
+          ctx.beginPath();
+          ctx.arc(enemy.size * 0.7, -3 + i * 2, 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.shadowBlur = 0;
+        
       } else if (enemy.type === 'tank') {
-        // Танк - большой
-        ctx.fillStyle = enemy.hitFlash > 0 ? '#ffffff' : enemy.color;
+        // Танк - большой бронированный
+        // Внешняя броня
+        const outerGrad = ctx.createRadialGradient(-5, -5, 0, 0, 0, enemy.size);
+        outerGrad.addColorStop(0, enemy.hitFlash > 0 ? '#ffffff' : '#6a6a8a');
+        outerGrad.addColorStop(0.5, enemy.hitFlash > 0 ? '#eeeeee' : enemy.color);
+        outerGrad.addColorStop(1, enemy.hitFlash > 0 ? '#cccccc' : '#2a2a4a');
+        ctx.fillStyle = outerGrad;
         ctx.beginPath();
         ctx.arc(0, 0, enemy.size, 0, Math.PI * 2);
         ctx.fill();
         
-        // Броня
-        ctx.fillStyle = enemy.hitFlash > 0 ? '#ffffff' : '#3a3a5a';
+        // Внутренняя часть
+        const innerGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, enemy.size * 0.7);
+        innerGrad.addColorStop(0, enemy.hitFlash > 0 ? '#ffffff' : '#5a5a7a');
+        innerGrad.addColorStop(1, enemy.hitFlash > 0 ? '#dddddd' : '#3a3a5a');
+        ctx.fillStyle = innerGrad;
         ctx.beginPath();
         ctx.arc(0, 0, enemy.size * 0.7, 0, Math.PI * 2);
         ctx.fill();
         
-        // Шипы
-        ctx.fillStyle = '#2a2a4a';
+        // Бронепластины с 3D эффектом
+        ctx.strokeStyle = '#1a1a3a';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, enemy.size * 0.85, 0, Math.PI * 2);
+        ctx.stroke();
+        
+        // Шипы с градиентом
         for (let i = 0; i < 6; i++) {
-          const angle = (i / 6) * Math.PI * 2;
+          const angle = (i / 6) * Math.PI * 2 + this.gameTime * 0.5;
           ctx.save();
           ctx.rotate(angle);
+          
+          const spikeGrad = ctx.createLinearGradient(enemy.size - 2, 0, enemy.size + 10, 0);
+          spikeGrad.addColorStop(0, enemy.hitFlash > 0 ? '#ffffff' : '#4a4a6a');
+          spikeGrad.addColorStop(1, enemy.hitFlash > 0 ? '#aaaaaa' : '#1a1a3a');
+          ctx.fillStyle = spikeGrad;
           ctx.beginPath();
           ctx.moveTo(enemy.size - 2, 0);
-          ctx.lineTo(enemy.size + 8, -5);
-          ctx.lineTo(enemy.size + 8, 5);
+          ctx.lineTo(enemy.size + 10, -6);
+          ctx.lineTo(enemy.size + 10, 6);
           ctx.closePath();
           ctx.fill();
           ctx.restore();
         }
         
+        // Глаз в центре
+        ctx.fillStyle = '#ff3333';
+        ctx.shadowColor = '#ff0000';
+        ctx.shadowBlur = 10;
+        ctx.beginPath();
+        ctx.arc(enemy.size * 0.3, 0, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(enemy.size * 0.35, -1, 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        
       } else if (enemy.type === 'shooter') {
-        // Стрелок
-        ctx.fillStyle = enemy.hitFlash > 0 ? '#ffffff' : enemy.color;
+        // Стрелок с улучшенными деталями
+        const bodyGrad = ctx.createRadialGradient(-3, -3, 0, 0, 0, enemy.size);
+        bodyGrad.addColorStop(0, enemy.hitFlash > 0 ? '#ffffff' : '#8a4040');
+        bodyGrad.addColorStop(0.7, enemy.hitFlash > 0 ? '#eeeeee' : enemy.color);
+        bodyGrad.addColorStop(1, enemy.hitFlash > 0 ? '#cccccc' : '#4a1a1a');
+        ctx.fillStyle = bodyGrad;
         ctx.beginPath();
         ctx.arc(0, 0, enemy.size, 0, Math.PI * 2);
         ctx.fill();
         
-        // Оружие
-        ctx.fillStyle = '#333';
-        ctx.fillRect(enemy.size * 0.3, -3, enemy.size, 6);
+        // Оружие с деталями
+        ctx.fillStyle = '#222';
+        ctx.fillRect(enemy.size * 0.3, -4, enemy.size + 5, 8);
+        ctx.fillStyle = '#444';
+        ctx.fillRect(enemy.size * 0.3, -3, 5, 6);
+        ctx.fillRect(enemy.size * 0.6, -2, 3, 4);
+        
+        // Дуло оружия с подсветкой
+        const muzzlePulse = Math.sin(this.gameTime * 10) * 0.3 + 0.3;
+        ctx.fillStyle = `rgba(255, 100, 50, ${muzzlePulse})`;
+        ctx.beginPath();
+        ctx.arc(enemy.size + enemy.size * 0.3 + 5, 0, 4, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Прицельный визор
+        ctx.fillStyle = '#ff4400';
+        ctx.shadowColor = '#ff4400';
+        ctx.shadowBlur = 5;
+        ctx.beginPath();
+        ctx.rect(enemy.size * 0.2, -2, 8, 4);
+        ctx.fill();
+        ctx.shadowBlur = 0;
         
       } else if (enemy.type === 'spitter') {
-        // Плевака
-        ctx.fillStyle = enemy.hitFlash > 0 ? '#ffffff' : enemy.color;
+        // Плевака с кислотной детализацией
+        const bodyGrad = ctx.createRadialGradient(-2, -2, 0, 0, 0, enemy.size);
+        bodyGrad.addColorStop(0, enemy.hitFlash > 0 ? '#ffffff' : '#4a8a6a');
+        bodyGrad.addColorStop(0.6, enemy.hitFlash > 0 ? '#eeeeee' : enemy.color);
+        bodyGrad.addColorStop(1, enemy.hitFlash > 0 ? '#cccccc' : '#1a4a3a');
+        ctx.fillStyle = bodyGrad;
         ctx.beginPath();
         ctx.arc(0, 0, enemy.size, 0, Math.PI * 2);
         ctx.fill();
         
-        // Пузыри
-        ctx.fillStyle = '#4aff8a';
-        ctx.globalAlpha = 0.6;
+        // Токсичные пузыри с анимацией
+        ctx.shadowColor = '#00ff88';
+        ctx.shadowBlur = 10;
+        for (let i = 0; i < 5; i++) {
+          const bubbleX = Math.cos(i * 1.2 + this.gameTime * 2) * enemy.size * 0.4;
+          const bubbleY = Math.sin(i * 1.5 + this.gameTime * 2) * enemy.size * 0.4;
+          const bubbleSize = 3 + Math.sin(this.gameTime * 4 + i) * 2;
+          const bubbleAlpha = 0.4 + Math.sin(this.gameTime * 3 + i) * 0.2;
+          
+          ctx.fillStyle = `rgba(100, 255, 150, ${bubbleAlpha})`;
+          ctx.beginPath();
+          ctx.arc(bubbleX, bubbleY, bubbleSize, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        
+        // "Пасть" спереди
+        ctx.fillStyle = '#1a3a2a';
         ctx.beginPath();
-        ctx.arc(enemy.size * 0.4, 0, 5, 0, Math.PI * 2);
-        ctx.arc(enemy.size * 0.2, -4, 3, 0, Math.PI * 2);
-        ctx.arc(enemy.size * 0.2, 4, 3, 0, Math.PI * 2);
+        ctx.ellipse(enemy.size * 0.6, 0, 5, 8, 0, 0, Math.PI * 2);
         ctx.fill();
-        ctx.globalAlpha = 1;
+        ctx.fillStyle = '#00ff66';
+        ctx.beginPath();
+        ctx.ellipse(enemy.size * 0.6, 0, 3, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
       }
       
       ctx.restore();
       
-      // Полоска здоровья
+      // Улучшенная полоска здоровья
       if (enemy.hp < enemy.maxHp) {
-        const barWidth = enemy.size * 2;
-        const barHeight = 4;
+        const barWidth = enemy.size * 2.2;
+        const barHeight = 5;
         const barX = enemy.x - barWidth / 2;
-        const barY = enemy.y - enemy.size - 12;
+        const barY = enemy.y - enemy.size - 15;
         
-        ctx.fillStyle = '#111';
+        // Тень под баром
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.fillRect(barX - 1, barY + 2, barWidth + 2, barHeight);
+        
+        // Фон
+        ctx.fillStyle = '#1a1a1a';
         ctx.fillRect(barX - 1, barY - 1, barWidth + 2, barHeight + 2);
         
         ctx.fillStyle = '#333';
         ctx.fillRect(barX, barY, barWidth, barHeight);
         
         const hpPercent = enemy.hp / enemy.maxHp;
-        const hpColor = hpPercent > 0.5 ? '#00ff00' : hpPercent > 0.25 ? '#ffaa00' : '#ff0000';
-        ctx.fillStyle = hpColor;
+        
+        // Градиент для здоровья
+        const hpGradient = ctx.createLinearGradient(barX, barY, barX, barY + barHeight);
+        if (hpPercent > 0.5) {
+          hpGradient.addColorStop(0, '#66ff66');
+          hpGradient.addColorStop(1, '#00aa00');
+        } else if (hpPercent > 0.25) {
+          hpGradient.addColorStop(0, '#ffdd66');
+          hpGradient.addColorStop(1, '#cc8800');
+        } else {
+          hpGradient.addColorStop(0, '#ff6666');
+          hpGradient.addColorStop(1, '#aa0000');
+        }
+        ctx.fillStyle = hpGradient;
         ctx.fillRect(barX, barY, barWidth * hpPercent, barHeight);
+        
+        // Блик на баре
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+        ctx.fillRect(barX, barY, barWidth * hpPercent, 2);
       }
     }
   }
 
   private renderBullets(ctx: CanvasRenderingContext2D) {
+    this.renderBulletsAdvanced(ctx);
+  }
+
+  private renderBulletsAdvanced(ctx: CanvasRenderingContext2D) {
     for (const bullet of this.bullets) {
       const angle = Math.atan2(bullet.vy, bullet.vx);
+      const speed = Math.hypot(bullet.vx, bullet.vy);
       
       ctx.save();
       ctx.translate(bullet.x, bullet.y);
       ctx.rotate(angle);
       
-      // След
-      const trailLength = bullet.isEnemy ? 15 : 25;
-      const gradient = ctx.createLinearGradient(-trailLength, 0, 0, 0);
+      // Улучшенный след с несколькими слоями
+      const trailLength = bullet.isEnemy ? 20 : 35;
+      const trailWidth = bullet.caliber * 1.5;
       
       if (bullet.isEnemy) {
-        gradient.addColorStop(0, 'rgba(255, 0, 0, 0)');
-        gradient.addColorStop(1, 'rgba(255, 100, 100, 0.8)');
-        ctx.shadowColor = '#ff0000';
+        // Вражеская пуля - красная/зелёная (для spitter)
+        const isAcid = bullet.caliber > 5;
+        
+        // Внешнее свечение
+        ctx.shadowColor = isAcid ? '#00ff88' : '#ff4400';
+        ctx.shadowBlur = 15;
+        
+        // Градиентный след
+        const trailGrad = ctx.createLinearGradient(-trailLength, 0, 5, 0);
+        if (isAcid) {
+          trailGrad.addColorStop(0, 'rgba(0, 100, 50, 0)');
+          trailGrad.addColorStop(0.5, 'rgba(50, 255, 150, 0.4)');
+          trailGrad.addColorStop(1, 'rgba(100, 255, 200, 0.9)');
+        } else {
+          trailGrad.addColorStop(0, 'rgba(100, 0, 0, 0)');
+          trailGrad.addColorStop(0.5, 'rgba(255, 100, 50, 0.5)');
+          trailGrad.addColorStop(1, 'rgba(255, 150, 100, 0.9)');
+        }
+        ctx.fillStyle = trailGrad;
+        
+        // След с заострённой формой
+        ctx.beginPath();
+        ctx.moveTo(-trailLength, 0);
+        ctx.lineTo(-trailLength * 0.3, -trailWidth * 0.3);
+        ctx.lineTo(bullet.caliber, -bullet.caliber * 0.5);
+        ctx.lineTo(bullet.caliber + 3, 0);
+        ctx.lineTo(bullet.caliber, bullet.caliber * 0.5);
+        ctx.lineTo(-trailLength * 0.3, trailWidth * 0.3);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Ядро пули
+        const coreGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, bullet.caliber);
+        if (isAcid) {
+          coreGrad.addColorStop(0, '#ffffff');
+          coreGrad.addColorStop(0.4, '#88ffbb');
+          coreGrad.addColorStop(1, '#22aa66');
+        } else {
+          coreGrad.addColorStop(0, '#ffffff');
+          coreGrad.addColorStop(0.4, '#ffaa88');
+          coreGrad.addColorStop(1, '#ff4422');
+        }
+        ctx.fillStyle = coreGrad;
+        ctx.beginPath();
+        ctx.arc(0, 0, bullet.caliber, 0, Math.PI * 2);
+        ctx.fill();
+        
       } else {
-        gradient.addColorStop(0, 'rgba(255, 200, 0, 0)');
-        gradient.addColorStop(1, 'rgba(255, 255, 100, 0.9)');
-        ctx.shadowColor = '#ffff00';
+        // Пуля игрока - жёлтая/оранжевая
+        ctx.shadowColor = '#ffaa00';
+        ctx.shadowBlur = 12;
+        
+        // Многослойный след
+        for (let layer = 0; layer < 3; layer++) {
+          const layerLength = trailLength * (1 - layer * 0.25);
+          const layerWidth = trailWidth * (1 - layer * 0.2);
+          const alpha = 0.3 + layer * 0.2;
+          
+          const trailGrad = ctx.createLinearGradient(-layerLength, 0, 5, 0);
+          trailGrad.addColorStop(0, `rgba(255, 150, 0, 0)`);
+          trailGrad.addColorStop(0.3, `rgba(255, 200, 50, ${alpha * 0.5})`);
+          trailGrad.addColorStop(0.7, `rgba(255, 230, 100, ${alpha})`);
+          trailGrad.addColorStop(1, `rgba(255, 255, 200, ${alpha})`);
+          ctx.fillStyle = trailGrad;
+          
+          ctx.beginPath();
+          ctx.moveTo(-layerLength, 0);
+          ctx.quadraticCurveTo(-layerLength * 0.5, -layerWidth * 0.5, bullet.caliber, -bullet.caliber * 0.3);
+          ctx.lineTo(bullet.caliber + 2, 0);
+          ctx.lineTo(bullet.caliber, bullet.caliber * 0.3);
+          ctx.quadraticCurveTo(-layerLength * 0.5, layerWidth * 0.5, -layerLength, 0);
+          ctx.fill();
+        }
+        
+        // Ядро пули с ярким свечением
+        const coreGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, bullet.caliber * 1.2);
+        coreGrad.addColorStop(0, '#ffffff');
+        coreGrad.addColorStop(0.3, '#ffffcc');
+        coreGrad.addColorStop(0.6, '#ffcc66');
+        coreGrad.addColorStop(1, '#ff8800');
+        ctx.fillStyle = coreGrad;
+        ctx.beginPath();
+        ctx.arc(0, 0, bullet.caliber, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Яркое ядро
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(-1, -1, bullet.caliber * 0.4, 0, Math.PI * 2);
+        ctx.fill();
       }
-      
-      ctx.shadowBlur = 8;
-      ctx.fillStyle = gradient;
-      ctx.fillRect(-trailLength, -bullet.caliber / 2, trailLength, bullet.caliber);
-      
-      // Пуля
-      ctx.fillStyle = bullet.isEnemy ? '#ff6666' : '#ffffaa';
-      ctx.beginPath();
-      ctx.arc(0, 0, bullet.caliber, 0, Math.PI * 2);
-      ctx.fill();
       
       ctx.restore();
     }
@@ -1596,36 +2400,86 @@ export class DoomEngine {
   }
 
   private renderPlayer(ctx: CanvasRenderingContext2D) {
+    this.renderPlayerAdvanced(ctx);
+  }
+
+  private renderPlayerAdvanced(ctx: CanvasRenderingContext2D) {
     const { x, y, angle } = this.player;
+    const isMoving = this.input.forward || this.input.back || this.input.left || this.input.right || this.input.joystickActive;
+    const bobAmount = isMoving ? Math.sin(this.player.walkCycle) * 2 : 0;
     
     ctx.save();
-    ctx.translate(x, y);
+    ctx.translate(x, y + bobAmount);
     
-    // Тень
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+    // Улучшенная тень с размытием
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
     ctx.beginPath();
-    ctx.ellipse(0, PLAYER_SIZE * 0.6, PLAYER_SIZE * 0.9, PLAYER_SIZE * 0.4, 0, 0, Math.PI * 2);
+    ctx.ellipse(3, PLAYER_SIZE * 0.7 - bobAmount, PLAYER_SIZE * 0.95, PLAYER_SIZE * 0.35, 0.15, 0, Math.PI * 2);
     ctx.fill();
     
-    // Фонарик / луч света
+    // Фонарик / луч света - улучшенный
     ctx.save();
     ctx.rotate(angle);
-    const flashlightGradient = ctx.createRadialGradient(0, 0, 0, 80, 0, 150);
-    flashlightGradient.addColorStop(0, 'rgba(255, 250, 200, 0.15)');
-    flashlightGradient.addColorStop(1, 'rgba(255, 250, 200, 0)');
+    
+    // Основной конус света
+    const flashlightGradient = ctx.createRadialGradient(100, 0, 0, 100, 0, 200);
+    flashlightGradient.addColorStop(0, 'rgba(255, 250, 220, 0.2)');
+    flashlightGradient.addColorStop(0.5, 'rgba(255, 245, 200, 0.08)');
+    flashlightGradient.addColorStop(1, 'rgba(255, 240, 180, 0)');
     ctx.fillStyle = flashlightGradient;
     ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.arc(0, 0, 150, -0.4, 0.4);
+    ctx.moveTo(15, 0);
+    ctx.arc(0, 0, 200, -0.35, 0.35);
     ctx.closePath();
     ctx.fill();
+    
+    // Центральный яркий луч
+    const centerBeam = ctx.createLinearGradient(0, 0, 180, 0);
+    centerBeam.addColorStop(0, 'rgba(255, 255, 240, 0.15)');
+    centerBeam.addColorStop(0.5, 'rgba(255, 255, 230, 0.05)');
+    centerBeam.addColorStop(1, 'rgba(255, 255, 220, 0)');
+    ctx.fillStyle = centerBeam;
+    ctx.beginPath();
+    ctx.moveTo(20, 0);
+    ctx.lineTo(180, -15);
+    ctx.lineTo(180, 15);
+    ctx.closePath();
+    ctx.fill();
+    
     ctx.restore();
     
     ctx.rotate(angle);
     
-    // Тело
-    const bodyGradient = ctx.createRadialGradient(0, 0, 0, 0, 0, PLAYER_SIZE);
-    bodyGradient.addColorStop(0, '#4a90d9');
+    // Броневой щит (если есть) - с анимированным эффектом
+    if (this.player.maxHealth > 100) {
+      const shieldPulse = Math.sin(this.gameTime * 4) * 0.2 + 0.8;
+      const shieldHealth = (this.player.maxHealth - 100) / 50; // 0 to 1
+      
+      // Внешний энергетический щит
+      ctx.strokeStyle = `rgba(0, 200, 255, ${shieldPulse * 0.6 * shieldHealth})`;
+      ctx.lineWidth = 3;
+      ctx.shadowColor = '#00ccff';
+      ctx.shadowBlur = 10;
+      ctx.beginPath();
+      ctx.arc(0, 0, PLAYER_SIZE + 5, -Math.PI * 0.4, Math.PI * 0.4);
+      ctx.stroke();
+      
+      // Гексагональные сегменты щита
+      ctx.strokeStyle = `rgba(100, 220, 255, ${shieldPulse * 0.3 * shieldHealth})`;
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 5; i++) {
+        const segAngle = -Math.PI * 0.35 + i * (Math.PI * 0.7 / 5);
+        ctx.beginPath();
+        ctx.arc(0, 0, PLAYER_SIZE + 5, segAngle, segAngle + Math.PI * 0.12);
+        ctx.stroke();
+      }
+      ctx.shadowBlur = 0;
+    }
+    
+    // Тело с улучшенным градиентом
+    const bodyGradient = ctx.createRadialGradient(-5, -5, 0, 0, 0, PLAYER_SIZE);
+    bodyGradient.addColorStop(0, '#6ab0ff');
+    bodyGradient.addColorStop(0.4, '#4a90d9');
     bodyGradient.addColorStop(0.7, '#2a5a99');
     bodyGradient.addColorStop(1, '#1a3a69');
     ctx.fillStyle = bodyGradient;
@@ -1633,63 +2487,147 @@ export class DoomEngine {
     ctx.arc(0, 0, PLAYER_SIZE, 0, Math.PI * 2);
     ctx.fill();
     
-    // Обводка
-    ctx.strokeStyle = '#6ab0ff';
+    // Обводка с свечением
+    ctx.shadowColor = '#4488ff';
+    ctx.shadowBlur = 5;
+    ctx.strokeStyle = '#7ac0ff';
     ctx.lineWidth = 2;
     ctx.stroke();
+    ctx.shadowBlur = 0;
     
-    // Броня (если есть)
-    if (this.player.maxHealth > 100) {
-      ctx.strokeStyle = '#00ccff';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(0, 0, PLAYER_SIZE + 3, -Math.PI * 0.3, Math.PI * 0.3);
-      ctx.stroke();
-    }
+    // Детали брони на теле
+    ctx.fillStyle = '#3a6a99';
+    ctx.beginPath();
+    ctx.arc(0, 0, PLAYER_SIZE * 0.6, 0, Math.PI * 2);
+    ctx.fill();
     
-    // Оружие
-    ctx.fillStyle = '#333';
-    ctx.fillRect(PLAYER_SIZE * 0.4, -5, 30, 10);
-    ctx.fillStyle = '#222';
-    ctx.fillRect(PLAYER_SIZE * 0.4 + 25, -4, 12, 8);
+    ctx.strokeStyle = '#5a8ab9';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    
+    // Индикатор здоровья на броне
+    const healthPercent = this.player.health / this.player.maxHealth;
+    const healthColor = healthPercent > 0.5 ? '#00ff88' : healthPercent > 0.25 ? '#ffcc00' : '#ff4444';
+    ctx.fillStyle = healthColor;
+    ctx.shadowColor = healthColor;
+    ctx.shadowBlur = 5;
+    ctx.beginPath();
+    ctx.arc(0, -PLAYER_SIZE * 0.3, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    
+    // Оружие с улучшенными деталями
+    // Основа оружия
+    const gunGrad = ctx.createLinearGradient(PLAYER_SIZE * 0.4, -5, PLAYER_SIZE * 0.4 + 35, 5);
+    gunGrad.addColorStop(0, '#444');
+    gunGrad.addColorStop(0.3, '#333');
+    gunGrad.addColorStop(0.7, '#222');
+    gunGrad.addColorStop(1, '#1a1a1a');
+    ctx.fillStyle = gunGrad;
+    ctx.fillRect(PLAYER_SIZE * 0.4, -6, 32, 12);
+    
+    // Ствол
+    const barrelGrad = ctx.createLinearGradient(PLAYER_SIZE * 0.4 + 27, 0, PLAYER_SIZE * 0.4 + 42, 0);
+    barrelGrad.addColorStop(0, '#333');
+    barrelGrad.addColorStop(1, '#1a1a1a');
+    ctx.fillStyle = barrelGrad;
+    ctx.fillRect(PLAYER_SIZE * 0.4 + 27, -4, 15, 8);
     
     // Детали оружия
-    ctx.fillStyle = '#444';
-    ctx.fillRect(PLAYER_SIZE * 0.4, -3, 5, 6);
-    ctx.fillRect(PLAYER_SIZE * 0.4 + 15, -4, 3, 8);
+    ctx.fillStyle = '#555';
+    ctx.fillRect(PLAYER_SIZE * 0.4, -4, 6, 8);
+    ctx.fillRect(PLAYER_SIZE * 0.4 + 10, -5, 4, 10);
+    ctx.fillRect(PLAYER_SIZE * 0.4 + 20, -3, 3, 6);
+    
+    // Тактический фонарь на оружии
+    ctx.fillStyle = '#666';
+    ctx.beginPath();
+    ctx.ellipse(PLAYER_SIZE * 0.4 + 18, 6, 3, 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255, 250, 220, 0.8)';
+    ctx.beginPath();
+    ctx.ellipse(PLAYER_SIZE * 0.4 + 18, 6, 2, 1.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Дуло - свечение при стрельбе
+    if (this.fireCooldown > FIRE_RATE * 0.5) {
+      const muzzleFlash = (this.fireCooldown - FIRE_RATE * 0.5) / (FIRE_RATE * 0.5);
+      ctx.fillStyle = `rgba(255, 200, 50, ${muzzleFlash})`;
+      ctx.shadowColor = '#ffaa00';
+      ctx.shadowBlur = 15;
+      ctx.beginPath();
+      ctx.arc(PLAYER_SIZE * 0.4 + 42, 0, 6 + muzzleFlash * 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
     
     ctx.restore();
     
-    // Прицел
-    const crosshairDist = 50;
+    // Улучшенный прицел
+    const crosshairDist = 55;
     const cx = x + Math.cos(angle) * crosshairDist;
     const cy = y + Math.sin(angle) * crosshairDist;
+    const spread = this.fireCooldown > 0 ? 3 : 0;
     
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+    ctx.save();
+    
+    // Внешнее свечение прицела
+    ctx.shadowColor = 'rgba(255, 100, 100, 0.5)';
+    ctx.shadowBlur = 8;
+    
+    // Внешний круг с динамическим размером
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
     ctx.lineWidth = 2;
-    
-    // Внешний круг
     ctx.beginPath();
-    ctx.arc(cx, cy, 12, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 14 + spread, 0, Math.PI * 2);
     ctx.stroke();
     
-    // Перекрестие
+    // Перекрестие с зазорами
     ctx.beginPath();
-    ctx.moveTo(cx - 18, cy);
-    ctx.lineTo(cx - 6, cy);
-    ctx.moveTo(cx + 6, cy);
-    ctx.lineTo(cx + 18, cy);
-    ctx.moveTo(cx, cy - 18);
-    ctx.lineTo(cx, cy - 6);
-    ctx.moveTo(cx, cy + 6);
-    ctx.lineTo(cx, cy + 18);
+    ctx.moveTo(cx - 22 - spread, cy);
+    ctx.lineTo(cx - 8, cy);
+    ctx.moveTo(cx + 8, cy);
+    ctx.lineTo(cx + 22 + spread, cy);
+    ctx.moveTo(cx, cy - 22 - spread);
+    ctx.lineTo(cx, cy - 8);
+    ctx.moveTo(cx, cy + 8);
+    ctx.lineTo(cx, cy + 22 + spread);
     ctx.stroke();
     
-    // Точка в центре
-    ctx.fillStyle = '#ff0000';
+    // Угловые элементы
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.lineWidth = 1;
+    const cornerDist = 10 + spread;
+    const cornerSize = 4;
     ctx.beginPath();
-    ctx.arc(cx, cy, 2, 0, Math.PI * 2);
+    // Верхний левый
+    ctx.moveTo(cx - cornerDist, cy - cornerDist + cornerSize);
+    ctx.lineTo(cx - cornerDist, cy - cornerDist);
+    ctx.lineTo(cx - cornerDist + cornerSize, cy - cornerDist);
+    // Верхний правый
+    ctx.moveTo(cx + cornerDist - cornerSize, cy - cornerDist);
+    ctx.lineTo(cx + cornerDist, cy - cornerDist);
+    ctx.lineTo(cx + cornerDist, cy - cornerDist + cornerSize);
+    // Нижний правый
+    ctx.moveTo(cx + cornerDist, cy + cornerDist - cornerSize);
+    ctx.lineTo(cx + cornerDist, cy + cornerDist);
+    ctx.lineTo(cx + cornerDist - cornerSize, cy + cornerDist);
+    // Нижний левый
+    ctx.moveTo(cx - cornerDist + cornerSize, cy + cornerDist);
+    ctx.lineTo(cx - cornerDist, cy + cornerDist);
+    ctx.lineTo(cx - cornerDist, cy + cornerDist - cornerSize);
+    ctx.stroke();
+    
+    // Центральная точка с пульсацией
+    const dotPulse = Math.sin(this.gameTime * 8) * 0.3 + 0.7;
+    ctx.fillStyle = `rgba(255, 50, 50, ${dotPulse})`;
+    ctx.shadowColor = '#ff0000';
+    ctx.shadowBlur = 5;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3, 0, Math.PI * 2);
     ctx.fill();
+    
+    ctx.restore();
   }
 
   private renderParticles(ctx: CanvasRenderingContext2D) {
