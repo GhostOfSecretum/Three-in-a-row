@@ -16,11 +16,28 @@ function VirtualJoystick({ onJoystickChange }: { onJoystickChange?: (x: number, 
   const [joystickPos, setJoystickPos] = useState({ x: 0, y: 0 });
   const [isActive, setIsActive] = useState(false);
   const originRef = useRef({ x: 0, y: 0 });
+  const currentValueRef = useRef({ x: 0, y: 0 });
   const activePointerId = useRef<number | null>(null);
 
   const JOYSTICK_SIZE = 120;
   const KNOB_SIZE = 50;
   const MAX_DISTANCE = (JOYSTICK_SIZE - KNOB_SIZE) / 2;
+
+  // Continuous update while joystick is active
+  useEffect(() => {
+    if (!isActive) return;
+    
+    let animationId: number;
+    const update = () => {
+      onJoystickChange?.(currentValueRef.current.x, currentValueRef.current.y, true);
+      animationId = requestAnimationFrame(update);
+    };
+    animationId = requestAnimationFrame(update);
+    
+    return () => {
+      cancelAnimationFrame(animationId);
+    };
+  }, [isActive, onJoystickChange]);
 
   const handlePointerDown = useCallback((e: PointerEvent<HTMLDivElement>) => {
     if (activePointerId.current !== null) return;
@@ -39,7 +56,6 @@ function VirtualJoystick({ onJoystickChange }: { onJoystickChange?: (x: number, 
     const centerY = rect.top + rect.height / 2;
     
     originRef.current = { x: centerX, y: centerY };
-    setIsActive(true);
     
     // Calculate initial position
     const dx = e.clientX - centerX;
@@ -60,8 +76,9 @@ function VirtualJoystick({ onJoystickChange }: { onJoystickChange?: (x: number, 
       });
     }
     
-    onJoystickChange?.(normX, normY, true);
-  }, [onJoystickChange, MAX_DISTANCE]);
+    currentValueRef.current = { x: normX, y: normY };
+    setIsActive(true);
+  }, [MAX_DISTANCE]);
 
   const handlePointerMove = useCallback((e: PointerEvent<HTMLDivElement>) => {
     if (activePointerId.current !== e.pointerId) return;
@@ -90,8 +107,8 @@ function VirtualJoystick({ onJoystickChange }: { onJoystickChange?: (x: number, 
       setJoystickPos({ x: 0, y: 0 });
     }
     
-    onJoystickChange?.(normX, normY, true);
-  }, [onJoystickChange, MAX_DISTANCE]);
+    currentValueRef.current = { x: normX, y: normY };
+  }, [MAX_DISTANCE]);
 
   const handlePointerUp = useCallback((e: PointerEvent<HTMLDivElement>) => {
     if (activePointerId.current !== e.pointerId) return;
@@ -100,6 +117,7 @@ function VirtualJoystick({ onJoystickChange }: { onJoystickChange?: (x: number, 
     e.stopPropagation();
     
     activePointerId.current = null;
+    currentValueRef.current = { x: 0, y: 0 };
     setIsActive(false);
     setJoystickPos({ x: 0, y: 0 });
     onJoystickChange?.(0, 0, false);
@@ -107,6 +125,7 @@ function VirtualJoystick({ onJoystickChange }: { onJoystickChange?: (x: number, 
 
   const handlePointerCancel = useCallback(() => {
     activePointerId.current = null;
+    currentValueRef.current = { x: 0, y: 0 };
     setIsActive(false);
     setJoystickPos({ x: 0, y: 0 });
     onJoystickChange?.(0, 0, false);
